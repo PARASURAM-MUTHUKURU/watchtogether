@@ -93,6 +93,7 @@ class MainActivity : Activity() {
     private lateinit var controlsGroup: LinearLayout
     private lateinit var reactionBar: LinearLayout
     private lateinit var micBtn: TextView
+    private lateinit var openMicBtn: TextView
     private lateinit var seekbarRow: LinearLayout
     private lateinit var seekBar: SeekBar
     private lateinit var timeCurrent: TextView
@@ -126,10 +127,24 @@ class MainActivity : Activity() {
 
     private var isUserSeeking = false
     private var controlsVisible = true
-    private var isSwiping = false
-    private var swipeType = 0 // 1: brightness, 2: volume
-    private var initialBrightness = 0.5f
-    private var initialVolume = 0
+
+    // Robust Gesture Touch State (Bypasses Android 14 GestureDetector issues)
+    private var touchStartX = 0f
+    private var touchStartY = 0f
+    private var touchStartTime = 0L
+    private var isVerticalDragging = false
+    private var dragGestureType = 0 // 1: brightness, 2: volume
+    private var initialScreenBrightness = 0.5f
+    private var initialAudioVolume = 0
+    private var lastTapTime = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+    private val doubleTapTimeout = 280L
+    private val singleTapRunnable = Runnable {
+        if (!destroyed) {
+            toggleControlsVisibility()
+        }
+    }
 
     private val hideControlsRunnable = Runnable {
         if (!destroyed && player?.playWhenReady == true) {
@@ -476,22 +491,134 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
 
-        // ExoPlayer View
+        // 0. ExoPlayer View
         video = PlayerView(this).apply {
             useController = false
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
         playerContainer.addView(video)
 
-        // Floating Emoji Overlay Container
-        emojiContainer = FrameLayout(this).apply {
+        // 1. Gesture Overlay (Directly over video to catch all swipe, double-tap & tap gestures)
+        touchOverlay = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            isClickable = false
-            isFocusable = false
+            isClickable = true
+            isFocusable = true
         }
-        playerContainer.addView(emojiContainer)
+        touchOverlay.setOnTouchListener { v, event ->
+            val density = resources.displayMetrics.density
+            val w = v.width.toFloat()
+            val h = v.height.toFloat()
 
-        // Double-Tap Ripple Overlay Container
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchStartX = event.x
+                    touchStartY = event.y
+                    touchStartTime = System.currentTimeMillis()
+                    isVerticalDragging = false
+                    dragGestureType = 0
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - touchStartX
+                    val dy = touchStartY - event.y // Positive when dragging UP
+                    val absDx = abs(dx)
+                    val absDy = abs(dy)
+
+                    // Detect vertical swipe when movement > 12dp and predominantly vertical
+                    if (!isVerticalDragging && absDy > 12f * density && absDy > absDx * 1.1f) {
+                        isVerticalDragging = true
+                        dragGestureType = if (touchStartX < w / 2f) 1 else 2 // 1: brightness, 2: volume
+
+                        if (dragGestureType == 1) {
+                            val lp = window.attributes
+                            initialScreenBrightness = if (lp.screenBrightness < 0f) {
+                                try {
+                                    android.provider.Settings.System.getInt(
+                                        contentResolver,
+                                        android.provider.Settings.System.SCREEN_BRIGHTNESS
+                                    ) / 255f
+                                } catch (_: Exception) { 0.5f }
+                            } else lp.screenBrightness
+                        } else {
+                            val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+                            initialAudioVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        }
+                    }
+
+                    if (isVerticalDragging && h > 0) {
+                        val deltaNormalized = (dy / (h * 0.65f)).coerceIn(-1.0f, 1.0f)
+                        if (dragGestureType == 1) {
+                            // Adjust Brightness
+                            val targetB = (initialScreenBrightness + deltaNormalized).coerceIn(0.02f, 1.0f)
+                            val lp = window.attributes
+                            lp.screenBrightness = targetB
+                            window.attributes = lp
+                            showHud("🔆 Brightness: ${(targetB * 100).toInt()}%")
+                        } else {
+                            // Adjust Volume
+                            val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+                            val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                            val deltaSteps = (deltaNormalized * maxVol).toInt()
+                            val targetVol = (initialAudioVolume + deltaSteps).coerceIn(0, maxVol)
+                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+                            val pct = if (maxVol > 0) (targetVol * 100) / maxVol else 0
+                            showHud(if (targetVol == 0) "🔇 Muted" else "🔊 Volume: $pct%")
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val now = System.currentTimeMillis()
+                    val totalTime = now - touchStartTime
+                    val totalDist = abs(event.x - touchStartX) + abs(event.y - touchStartY)
+
+                    if (isVerticalDragging) {
+                        isVerticalDragging = false
+                        hideHudDelayed()
+                    } else if (totalDist < 25f * density && totalTime < 350) {
+                        // Tap detected: check for double-tap vs single-tap
+                        val timeSinceLastTap = now - lastTapTime
+                        val distFromLastTap = abs(event.x - lastTapX) + abs(event.y - lastTapY)
+
+                        if (timeSinceLastTap < doubleTapTimeout && distFromLastTap < 50f * density) {
+                            // DOUBLE TAP!
+                            ui.removeCallbacks(singleTapRunnable)
+                            lastTapTime = 0L
+                            if (event.x < w / 2f) {
+                                seekRelative(-10000L)
+                                showRipple(false)
+                                showHud("« 10s")
+                            } else {
+                                seekRelative(10000L)
+                                showRipple(true)
+                                showHud("10s »")
+                            }
+                            hideHudDelayed()
+                        } else {
+                            // FIRST TAP: wait for doubleTapTimeout before toggling controls
+                            lastTapTime = now
+                            lastTapX = event.x
+                            lastTapY = event.y
+                            ui.removeCallbacks(singleTapRunnable)
+                            ui.postDelayed(singleTapRunnable, doubleTapTimeout)
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (isVerticalDragging) {
+                        isVerticalDragging = false
+                        hideHudDelayed()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+        playerContainer.addView(touchOverlay)
+
+        // 2. Double-Tap Ripple Overlay Container
         rippleContainer = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             isClickable = false
@@ -529,7 +656,15 @@ class MainActivity : Activity() {
         rippleContainer.addView(rightRipple)
         playerContainer.addView(rippleContainer)
 
-        // Brightness & Volume HUD Container
+        // 3. Floating Emoji Overlay Container
+        emojiContainer = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            isClickable = false
+            isFocusable = false
+        }
+        playerContainer.addView(emojiContainer)
+
+        // 4. Brightness & Volume HUD Container
         hudContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -538,6 +673,8 @@ class MainActivity : Activity() {
                 gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
                 topMargin = (16 * density).toInt()
             }
+            isClickable = false
+            isFocusable = false
         }
         hudText = TextView(this).apply {
             text = "HUD"
@@ -550,97 +687,51 @@ class MainActivity : Activity() {
         hudContainer.addView(hudText)
         playerContainer.addView(hudContainer)
 
-        // Gesture Overlay to Intercept Taps, Double-Taps, and Swipes
-        touchOverlay = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            isClickable = true
-            isFocusable = true
-        }
-        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
-
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                toggleControlsVisibility()
-                return true
-            }
-
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val w = playerContainer.width
-                if (w <= 0) return false
-                if (e.x < w / 2f) {
-                    seekRelative(-10000L)
-                    showRipple(false)
-                } else {
-                    seekRelative(10000L)
-                    showRipple(true)
-                }
-                return true
-            }
-
-            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-                if (e1 == null) return false
-                val w = playerContainer.width
-                val h = playerContainer.height
-                if (w <= 0 || h <= 0) return false
-                if (abs(distanceY) > abs(distanceX) || isSwiping) {
-                    if (!isSwiping) {
-                        isSwiping = true
-                        swipeType = if (e1.x < w / 2f) 1 else 2
-                        if (swipeType == 1) {
-                            val lp = window.attributes
-                            initialBrightness = if (lp.screenBrightness < 0f) 0.5f else lp.screenBrightness
-                        } else {
-                            val audio = getSystemService(AUDIO_SERVICE) as AudioManager
-                            initialVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-                        }
-                    }
-                    val deltaY = (e1.y - e2.y) / h
-                    if (swipeType == 1) {
-                        val newB = (initialBrightness + deltaY).coerceIn(0.01f, 1.0f)
-                        val lp = window.attributes
-                        lp.screenBrightness = newB
-                        window.attributes = lp
-                        showHud("🔆 Brightness: ${(newB * 100).toInt()}%")
-                    } else {
-                        val audio = getSystemService(AUDIO_SERVICE) as AudioManager
-                        val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                        val deltaVol = (deltaY * maxVol).toInt()
-                        val targetVol = (initialVolume + deltaVol).coerceIn(0, maxVol)
-                        audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-                        val pct = if (maxVol > 0) (targetVol * 100) / maxVol else 0
-                        showHud(if (targetVol == 0) "🔇 Muted" else "🔊 Volume: $pct%")
-                    }
-                    return true
-                }
-                return false
-            }
-        })
-        touchOverlay.setOnTouchListener { _, event ->
-            val handled = gestureDetector.onTouchEvent(event)
-            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                if (isSwiping) {
-                    isSwiping = false
-                    hideHudDelayed()
-                }
-            }
-            handled || true
-        }
-        playerContainer.addView(touchOverlay)
-
-        // Floating Quick Walkie-Talkie Button (Always reachable in full screen)
+        // 5. Floating Quick Walkie-Talkie Button (Positioned at bottom-right for natural thumb reach)
         floatingMicBtn = TextView(this).apply {
             text = "🎙️"
             textSize = 17f
             gravity = Gravity.CENTER
             background = roundedBackground(Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
-            layoutParams = FrameLayout.LayoutParams((38 * density).toInt(), (38 * density).toInt()).apply {
-                gravity = Gravity.TOP or Gravity.END
-                topMargin = (12 * density).toInt()
-                marginEnd = (12 * density).toInt()
+            layoutParams = FrameLayout.LayoutParams((42 * density).toInt(), (42 * density).toInt()).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                bottomMargin = (72 * density).toInt()
+                marginEnd = (14 * density).toInt()
             }
             elevation = 15f
-            setOnTouchListener { v, event ->
-                handleMicTouchEvent(v, event)
+            setOnClickListener {
+                if (isVoiceLocked) {
+                    isVoiceLocked = false
+                    stopLiveVoiceStreaming()
+                    resetMicButtonStates()
+                    note("🎙️ Mic muted")
+                } else {
+                    isVoiceLocked = true
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(
+                                android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE)
+                            )
+                        }
+                    } catch (_: Exception) {}
+                    if (isRecording) {
+                        isRecording = false
+                        try {
+                            recorder?.stop()
+                            recorder?.release()
+                        } catch (_: Exception) {}
+                        recorder = null
+                        recordFile?.delete()
+                        recordFile = null
+                    }
+                    updateMicButtonsState(speaking = false)
+                    startLiveVoiceStreaming()
+                    note("🟢 Open Mic active! Speak freely. Tap to mute.")
+                }
+            }
+            setOnLongClickListener {
+                performClick()
+                true
             }
         }
         playerContainer.addView(floatingMicBtn)
@@ -659,7 +750,7 @@ class MainActivity : Activity() {
             }
         }
 
-        // 1. Live Floating Emoji Bar & Push-to-Talk Mic
+        // 1. Live Floating Emoji Bar & Push-to-Talk Mic & Open Mic Toggle
         reactionBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -689,7 +780,7 @@ class MainActivity : Activity() {
             reactionBar.addView(emojiBtn)
         }
 
-        // Push-to-Talk Walkie-Talkie Button
+        // Push-to-Talk Walkie-Talkie Button (Hold to talk, swipe up 18dp to lock)
         micBtn = TextView(this).apply {
             text = "🎙️ Talk"
             textSize = 12f
@@ -697,7 +788,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             background = roundedBackground(Color.parseColor("#059669"), 14f)
-            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = (4 * density).toInt()
                 marginEnd = (2 * density).toInt()
@@ -708,6 +799,53 @@ class MainActivity : Activity() {
             }
         }
         reactionBar.addView(micBtn)
+
+        // Dedicated Open Mic Toggle Button (1-tap lock hands-free)
+        openMicBtn = TextView(this).apply {
+            text = "🔓 Open"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.parseColor("#334155"), 14f)
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = (2 * density).toInt()
+                marginEnd = (2 * density).toInt()
+            }
+            setOnClickListener {
+                resetControlsTimer()
+                if (isVoiceLocked) {
+                    isVoiceLocked = false
+                    stopLiveVoiceStreaming()
+                    resetMicButtonStates()
+                    note("🎙️ Mic muted")
+                } else {
+                    isVoiceLocked = true
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(
+                                android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE)
+                            )
+                        }
+                    } catch (_: Exception) {}
+                    if (isRecording) {
+                        isRecording = false
+                        try {
+                            recorder?.stop()
+                            recorder?.release()
+                        } catch (_: Exception) {}
+                        recorder = null
+                        recordFile?.delete()
+                        recordFile = null
+                    }
+                    updateMicButtonsState(speaking = false)
+                    startLiveVoiceStreaming()
+                    note("🟢 Open Mic active! Speak freely. Tap to mute.")
+                }
+            }
+        }
+        reactionBar.addView(openMicBtn)
         controlsGroup.addView(reactionBar)
 
         // 2. Interactive Seekbar / Scrubber Row
@@ -881,6 +1019,12 @@ class MainActivity : Activity() {
                 micBtn.scaleX = 1f
                 micBtn.scaleY = 1f
             }
+            if (::openMicBtn.isInitialized) {
+                openMicBtn.text = "🔓 Open"
+                openMicBtn.background = roundedBackground(Color.parseColor("#334155"), 14f)
+                openMicBtn.scaleX = 1f
+                openMicBtn.scaleY = 1f
+            }
             if (::floatingMicBtn.isInitialized) {
                 floatingMicBtn.text = "🎙️"
                 floatingMicBtn.background = roundedBackground(Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
@@ -896,8 +1040,12 @@ class MainActivity : Activity() {
             val density = resources.displayMetrics.density
             if (speaking) {
                 if (::micBtn.isInitialized) {
-                    micBtn.text = "🗣️ Speaking… (Tap: Mute)"
+                    micBtn.text = "🗣️ Speaking…"
                     micBtn.background = roundedBackground(Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2)
+                }
+                if (::openMicBtn.isInitialized) {
+                    openMicBtn.text = "🗣️ Live"
+                    openMicBtn.background = roundedBackground(Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2)
                 }
                 if (::floatingMicBtn.isInitialized) {
                     floatingMicBtn.text = "🗣️"
@@ -905,8 +1053,12 @@ class MainActivity : Activity() {
                 }
             } else {
                 if (::micBtn.isInitialized) {
-                    micBtn.text = "🟢 Open Mic (Tap: Mute)"
+                    micBtn.text = "🟢 Open Mic"
                     micBtn.background = roundedBackground(Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2)
+                }
+                if (::openMicBtn.isInitialized) {
+                    openMicBtn.text = "🟢 Mute"
+                    openMicBtn.background = roundedBackground(Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2)
                 }
                 if (::floatingMicBtn.isInitialized) {
                     floatingMicBtn.text = "🟢"
@@ -918,7 +1070,8 @@ class MainActivity : Activity() {
 
     private fun handleMicTouchEvent(view: View, event: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
-        when (event.action) {
+        view.parent?.requestDisallowInterceptTouchEvent(true)
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 // If mic is locked in Smart Open-Mic mode, tapping it mutes & unlocks!
                 if (isVoiceLocked) {
@@ -934,7 +1087,7 @@ class MainActivity : Activity() {
                 isTrackingSwipeUp = true
                 view.animate().scaleX(1.15f).scaleY(1.15f).setDuration(100).start()
                 if (::micBtn.isInitialized) {
-                    micBtn.text = "🔴 Swipe up 🔒"
+                    micBtn.text = "🔴 Swipe 🔒"
                     micBtn.background = roundedBackground(Color.parseColor("#DC2626"), 14f)
                 }
                 if (::floatingMicBtn.isInitialized) {
@@ -947,7 +1100,7 @@ class MainActivity : Activity() {
             MotionEvent.ACTION_MOVE -> {
                 if (isTrackingSwipeUp && !isVoiceLocked) {
                     val deltaY = micTouchStartY - event.rawY // Dragging upwards
-                    val lockThreshold = 45f * density // 45dp swipe-up threshold
+                    val lockThreshold = 18f * density // 18dp swipe-up threshold (easy and smooth to trigger!)
                     if (deltaY >= lockThreshold) {
                         isVoiceLocked = true
                         isTrackingSwipeUp = false
@@ -979,7 +1132,7 @@ class MainActivity : Activity() {
                         // Activate Smart Open-Mic Live Voice Streaming!
                         updateMicButtonsState(speaking = false)
                         startLiveVoiceStreaming()
-                        note("🟢 Open Mic active! Speak freely. Tap mic to mute.")
+                        note("🟢 Open Mic active! Speak freely. Tap to mute.")
                     }
                 }
                 return true
@@ -2038,6 +2191,7 @@ class MainActivity : Activity() {
         ui.removeCallbacks(progressUpdater)
         ui.removeCallbacks(hideControlsRunnable)
         ui.removeCallbacks(hideHudRunnable)
+        ui.removeCallbacks(singleTapRunnable)
         ui.removeCallbacks(incomingSilenceRunnable)
         if (isVoiceLocked) stopLiveVoiceStreaming()
         stopLiveAudioTrack()
@@ -2056,7 +2210,7 @@ class MainActivity : Activity() {
         note("Left room · Ready for next movie")
     }
     override fun onDestroy() {
-        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(incomingSilenceRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); client.dispatcher.executorService.shutdown()
+        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); client.dispatcher.executorService.shutdown()
         super.onDestroy()
     }
 }
