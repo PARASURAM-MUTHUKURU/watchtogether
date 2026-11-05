@@ -14,3 +14,4 @@ services:
         value: 3.12.8
       - key: WATCHTOGETHER_CREATOR_KEY
         value: lbj1t0uyEHOgRhuDXI4r2OjLvNM9fpZ8vqNHzDpsmeo
+
