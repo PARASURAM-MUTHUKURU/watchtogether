@@ -51,7 +51,7 @@ import kotlin.math.abs
 
 class MainActivity : Activity() {
     companion object {
-        const val DEFAULT_SERVER = "https://container-parker-incentive-transformation.trycloudflare.com"
+        const val DEFAULT_SERVER = "https://watchtogether-relay.onrender.com"
         const val DEFAULT_CREATOR_KEY = "lbj1t0uyEHOgRhuDXI4r2OjLvNM9fpZ8vqNHzDpsmeo"
     }
 
@@ -339,7 +339,8 @@ class MainActivity : Activity() {
 
         // Pre-configured Server & Security Settings Card
         val settingsCard = stepCard("⚙", "Relay & Security (Configured ✓)", "Server origin and host access credentials")
-        val savedServer = getPreferences(0).getString("server", DEFAULT_SERVER)?.takeIf { it.isNotBlank() } ?: DEFAULT_SERVER
+        val prefServer = getPreferences(0).getString("server", DEFAULT_SERVER)?.takeIf { it.isNotBlank() } ?: DEFAULT_SERVER
+        val savedServer = if (prefServer.contains("trycloudflare.com")) DEFAULT_SERVER else prefServer
         server = EditText(this).apply {
             hint = "Relay Server HTTPS origin"
             setSingleLine(true)
@@ -389,6 +390,10 @@ class MainActivity : Activity() {
             setHintTextColor(Color.parseColor("#64748B"))
             background = roundedBackground(Color.parseColor("#0F172A"), 8f, Color.parseColor("#334155"), 1)
             setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
+            val lastInvite = getPreferences(0).getString("last_invite", "") ?: ""
+            if (lastInvite.isNotEmpty()) {
+                setText(lastInvite)
+            }
         }
         val pasteBtn = styledButton("📋 Paste from Clipboard", Color.parseColor("#334155")) {
             try {
@@ -789,7 +794,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (!connected && !connecting) {
+        if (token.isNotEmpty() && !destroyed && (socket == null || !connected) && !connecting) {
+            note("Reconnecting to movie…")
+            connect()
+        } else if (!connected && !connecting) {
             try {
                 val clip = (getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
                 if (clip != null && clip.contains('|') && clip.contains('.')) {
@@ -1294,7 +1302,9 @@ class MainActivity : Activity() {
     }
     private fun endpoint(): String {
         val input = server.text.toString().trim()
-        val raw = if (input.isNotEmpty()) input else (getPreferences(0).getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER)
+        val prefServer = getPreferences(0).getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER
+        val fallbackServer = if (prefServer.contains("trycloudflare.com")) DEFAULT_SERVER else prefServer
+        val raw = if (input.isNotEmpty() && !input.contains("trycloudflare.com")) input else fallbackServer
         val url = raw.toHttpUrlOrNull()
         require(url != null && url.isHttps && url.username.isEmpty() && url.password.isEmpty() &&
             url.encodedPath == "/" && url.query == null && url.fragment == null) {
@@ -1391,8 +1401,10 @@ class MainActivity : Activity() {
     }
     private fun joinRoom() {
         try {
-            val input = inviteInput.text.toString().trim().split('|')
+            val rawInvite = inviteInput.text.toString().trim()
+            val input = rawInvite.split('|')
             require(input.size == 2) { "Paste the full invite: server|room.token" }
+            getPreferences(0).edit().putString("last_invite", rawInvite).apply()
             server.setText(input[0].trim()); base = endpoint()
             val parts = input[1].trim().split('.')
             require(parts.size == 2 && parts.all { it.matches(Regex("[A-Za-z0-9_-]+")) }) { "Invalid invite" }
@@ -1471,25 +1483,45 @@ class MainActivity : Activity() {
                 }
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                ui.post { if (socket === webSocket) { leave(); note("Room closed. Create or join again.") } }
+                ui.post {
+                    if (socket === webSocket) {
+                        socket = null
+                        if (code == 1000 && reason == "Left room") {
+                            leave()
+                        } else if (code == 1001 && reason.contains("closed", ignoreCase = true)) {
+                            leave()
+                            note("Host closed the room.")
+                        } else if (token.isNotEmpty() && !destroyed) {
+                            scheduleReconnect(if (reason.isNotEmpty()) reason else "closed $code")
+                        } else {
+                            leave()
+                            note("Room closed. Create or join again.")
+                        }
+                    }
+                }
             }
         })
     }
     private fun scheduleReconnect(errorMsg: String) {
         socket = null; connected = false
-        if (reconnectAttempts >= 5) {
+        if (reconnectAttempts >= 15) {
             reconnectAttempts = 0
             leave()
             note("Connection lost: $errorMsg. Create or join again.")
             return
         }
         reconnectAttempts++
-        val delay = (1000L * reconnectAttempts).coerceAtMost(5000L)
-        note("Connection interrupted ($errorMsg). Reconnecting in ${delay / 1000}s…")
+        val delay = (1200L * reconnectAttempts).coerceIn(1500L, 4000L)
+        note("Reconnecting in ${delay / 1000}s…")
         ui.removeCallbacks(reconnectTask)
         ui.postDelayed(reconnectTask, delay)
     }
     private fun setupPlayer() {
+        if (player != null) {
+            val ready = player?.playbackState != Player.STATE_IDLE
+            send(JSONObject().put("type", "ready").put("ready", ready))
+            return
+        }
         val httpFactory = OkHttpDataSource.Factory(client).setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
         val factory = DefaultDataSource.Factory(this, httpFactory)
         val loadControl = DefaultLoadControl.Builder()

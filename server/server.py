@@ -91,10 +91,10 @@ async def create(request):
     code, host_token, invitation = secrets.token_urlsafe(12), secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     now = time.monotonic()
     room = Room(code=code, host_token=digest(host_token), invite_hash=digest(invitation),
-                expires=now+policy.room_ttl, invite_expires=now+policy.invite_ttl, size=size, mime=mime)
+                expires=now+policy.room_ttl, invite_expires=now+policy.room_ttl, size=size, mime=mime)
     rooms[code] = room
     return web.json_response(dict(code=code, hostToken=host_token,
-                                  invite=code+'.'+invitation, inviteExpiresIn=policy.invite_ttl), status=201)
+                                  invite=code+'.'+invitation, inviteExpiresIn=policy.room_ttl), status=201)
 
 async def join(request):
     room = live(request)
@@ -103,9 +103,15 @@ async def join(request):
         raise web.HTTPUnauthorized(text='Invite invalid, already used or expired')
     if room.host is None:
         raise web.HTTPConflict(text='Wait for the host to connect')
-    # No await between validation and consumption: redemption is atomic in this process.
+    # If a previous guest session is still open or reserved, clean it up so reconnection is instant
+    room.reserved.discard('guest')
+    if room.guest is not None and not room.guest.closed:
+        try:
+            await room.guest.close(code=1000, message=b'Replaced by new session')
+        except Exception:
+            pass
+    room.guest = None
     guest_token = secrets.token_urlsafe(32)
-    room.invite_hash = ''
     room.guest_token = digest(guest_token)
     return web.json_response(dict(guestToken=guest_token))
 

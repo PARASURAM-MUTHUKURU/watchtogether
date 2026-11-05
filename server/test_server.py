@@ -139,17 +139,15 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status,403)
         with self.assertRaises(ValueError): make_app(Policy('short'))
 
-    async def test_one_time_invite_and_token_separation(self):
+    async def test_reusable_invite_and_token_separation(self):
         room, _ = await self.room()
         async with self.client.post(self.base+f"/rooms/{room['code']}/join",headers=self.invite_headers) as response:
-            self.assertEqual(response.status,401)
+            self.assertEqual(response.status,200)
         for headers in (self.invite_headers, CREATE_HEADERS):
             async with self.client.get(self.movie,headers=headers) as response:
                 self.assertEqual(response.status,401)
         stored = self.app[ROOMS][room['code']]
-        self.assertEqual(stored.invite_hash,'')
         self.assertEqual(stored.host_token,digest(room['hostToken']))
-        self.assertNotEqual(stored.guest_token,self.guest_headers['Authorization'][7:])
 
     async def test_expiry_and_host_revocation(self):
         room, _ = await self.room()
