@@ -61,7 +61,9 @@ class MainActivity : Activity() {
     }
 
     private val ui = Handler(Looper.getMainLooper())
-    private val worker = Executors.newFixedThreadPool(4)
+    private val worker = Executors.newFixedThreadPool(8)
+    private val videoWorker = Executors.newFixedThreadPool(8)
+    private val audioWorker = Executors.newSingleThreadExecutor()
     private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
     private lateinit var mainLayout: LinearLayout
     private lateinit var setupScrollView: ScrollView
@@ -115,6 +117,7 @@ class MainActivity : Activity() {
     // Idea 2: Smart Open-Mic Live Voice Streaming & VAD
     @Volatile private var isLiveStreaming = false
     @Volatile private var isLocalSpeaking = false
+    private var liveRecordThread: Thread? = null
     private var liveAudioRecord: AudioRecord? = null
     private var acousticEchoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
@@ -1089,14 +1092,16 @@ class MainActivity : Activity() {
                 isTrackingSwipeUp = true
                 view.animate().scaleX(1.15f).scaleY(1.15f).setDuration(100).start()
                 if (::micBtn.isInitialized) {
-                    micBtn.text = "🔴 Swipe 🔒"
+                    micBtn.text = "🔴 Talking…"
                     micBtn.background = roundedBackground(Color.parseColor("#DC2626"), 14f)
                 }
                 if (::floatingMicBtn.isInitialized) {
-                    floatingMicBtn.text = "🔒"
+                    floatingMicBtn.text = "🗣️"
                     floatingMicBtn.background = roundedBackground(Color.parseColor("#DC2626"), 18f)
                 }
-                startVoiceRecording()
+                // Start instant live PCM streaming immediately!
+                startLiveVoiceStreaming()
+                showHud("🎙️ Hold to talk · Swipe up to lock")
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -1119,21 +1124,7 @@ class MainActivity : Activity() {
                             view.animate().scaleX(1.1f).scaleY(1.1f).setDuration(120).start()
                         }.start()
 
-                        // Abort regular M4A recording without sending
-                        if (isRecording) {
-                            isRecording = false
-                            try {
-                                recorder?.stop()
-                                recorder?.release()
-                            } catch (_: Exception) {}
-                            recorder = null
-                            recordFile?.delete()
-                            recordFile = null
-                        }
-
-                        // Activate Smart Open-Mic Live Voice Streaming!
-                        updateMicButtonsState(speaking = false)
-                        startLiveVoiceStreaming()
+                        updateMicButtonsState(speaking = true)
                         note("🟢 Open Mic active! Speak freely. Tap to mute.")
                     }
                 }
@@ -1146,7 +1137,7 @@ class MainActivity : Activity() {
                 }
                 view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
                 resetMicButtonStates()
-                stopVoiceRecording(sendAudio = true)
+                stopLiveVoiceStreaming()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -1155,7 +1146,7 @@ class MainActivity : Activity() {
                 }
                 view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
                 resetMicButtonStates()
-                stopVoiceRecording(sendAudio = false)
+                stopLiveVoiceStreaming()
                 return true
             }
         }
@@ -1170,14 +1161,14 @@ class MainActivity : Activity() {
         if (isLiveStreaming) return
         isLiveStreaming = true
 
-        worker.execute {
+        liveRecordThread = Thread({
             try {
                 val sampleRate = 16000
                 val channelConfig = AudioFormat.CHANNEL_IN_MONO
                 val audioFormat = AudioFormat.ENCODING_PCM_16BIT
                 val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-                val chunkSize = 3200 // 200ms at 16kHz 16-bit (6400 bytes)
-                val bufferSize = maxOf(minBufSize, chunkSize * 2)
+                val chunkSize = 1600 // 100ms at 16kHz 16-bit (3200 bytes)
+                val bufferSize = maxOf(minBufSize, chunkSize * 4)
 
                 val record = try {
                     AudioRecord(
@@ -1197,7 +1188,8 @@ class MainActivity : Activity() {
 
                 if (record.state != AudioRecord.STATE_INITIALIZED) {
                     ui.post { note("Cannot start microphone") }
-                    return@execute
+                    isLiveStreaming = false
+                    return@Thread
                 }
 
                 val sessionId = record.audioSessionId
@@ -1222,6 +1214,9 @@ class MainActivity : Activity() {
                 var lastSpeechTime = 0L
                 var localSpeaking = false
 
+                // Duck movie volume while speaking into mic
+                ui.post { player?.volume = 0.15f }
+
                 while (isLiveStreaming && !destroyed) {
                     val readShorts = record.read(shortBuffer, 0, chunkSize)
                     if (readShorts <= 0) continue
@@ -1233,9 +1228,11 @@ class MainActivity : Activity() {
                         sum += (s * s)
                     }
                     val rms = kotlin.math.sqrt(sum / readShorts)
-
                     val now = System.currentTimeMillis()
-                    val isSpeech = rms >= 1000.0
+
+                    // PTT mode (holding button): always transmits.
+                    // Open-Mic mode (hands-free): checks calibrated threshold (rms >= 260.0).
+                    val isSpeech = !isVoiceLocked || (rms >= 260.0)
 
                     if (isSpeech) {
                         lastSpeechTime = now
@@ -1252,8 +1249,8 @@ class MainActivity : Activity() {
                     }
 
                     if (localSpeaking) {
-                        if (!isSpeech && (now - lastSpeechTime > 1200L)) {
-                            // Silence lasting > 1.2s: restore movie volume
+                        if (isVoiceLocked && !isSpeech && (now - lastSpeechTime > 1200L)) {
+                            // In Open-Mic mode: silence lasting > 1.2s -> restore movie volume
                             localSpeaking = false
                             isLocalSpeaking = false
                             ui.post {
@@ -1262,7 +1259,9 @@ class MainActivity : Activity() {
                                 hideHudDelayed()
                                 updateMicButtonsState(speaking = false)
                             }
-                            send(JSONObject().put("type", "voice_chunk").put("audio", "").put("speaking", false))
+                            worker.execute {
+                                send(JSONObject().put("type", "voice_chunk").put("audio", "").put("speaking", false))
+                            }
                         } else {
                             // Stream speech PCM chunk
                             for (i in 0 until readShorts) {
@@ -1273,7 +1272,9 @@ class MainActivity : Activity() {
                             val b64 = android.util.Base64.encodeToString(
                                 byteBuffer, 0, readShorts * 2, android.util.Base64.NO_WRAP
                             )
-                            send(JSONObject().put("type", "voice_chunk").put("audio", b64).put("speaking", true))
+                            worker.execute {
+                                send(JSONObject().put("type", "voice_chunk").put("audio", b64).put("speaking", true))
+                            }
                         }
                     }
                 }
@@ -1291,21 +1292,26 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 ui.post { note("Live mic error: ${e.message}") }
             }
+        }, "LiveVoiceRecordThread").apply {
+            isDaemon = true
+            start()
         }
     }
 
     private fun stopLiveVoiceStreaming() {
         isLiveStreaming = false
         isLocalSpeaking = false
+        val r = liveAudioRecord
+        liveAudioRecord = null
         try {
-            liveAudioRecord?.stop()
-            liveAudioRecord?.release()
+            r?.stop()
+            r?.release()
         } catch (_: Exception) {}
         try { acousticEchoCanceler?.release() } catch (_: Exception) {}
         try { noiseSuppressor?.release() } catch (_: Exception) {}
         acousticEchoCanceler = null
         noiseSuppressor = null
-        liveAudioRecord = null
+        liveRecordThread = null
         ui.post {
             player?.volume = 1.0f
             hideHudDelayed()
@@ -1325,12 +1331,12 @@ class MainActivity : Activity() {
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             )
-            val bufferSize = maxOf(minBufSize * 2, 8000)
+            val bufferSize = maxOf(minBufSize * 2, 6400)
             track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA) // Ensures loud output through LOUDSPEAKER!
                         .build()
                 )
                 .setAudioFormat(
@@ -1346,7 +1352,7 @@ class MainActivity : Activity() {
             try {
                 liveAudioEnhancer?.release()
                 liveAudioEnhancer = LoudnessEnhancer(track.audioSessionId).apply {
-                    setTargetGain(1200) // +12 dB clarity boost
+                    setTargetGain(1400) // +14 dB clarity boost
                     enabled = true
                 }
             } catch (_: Exception) {}
@@ -1376,7 +1382,7 @@ class MainActivity : Activity() {
     private fun handleIncomingVoiceChunk(base64: String, isSpeaking: Boolean) {
         if (destroyed) return
         if (isSpeaking && base64.isNotEmpty()) {
-            worker.execute {
+            audioWorker.execute {
                 try {
                     val pcmBytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
                     getOrCreateLiveAudioTrack().write(pcmBytes, 0, pcmBytes.size)
@@ -1992,7 +1998,7 @@ class MainActivity : Activity() {
                     if (data.optString("type") == "read" && host && socket === webSocket) {
                         val source = movie
                         val sourceSize = size
-                        if (source != null) worker.execute { readChunk(webSocket, data, source, sourceSize) }
+                        if (source != null) videoWorker.execute { readChunk(webSocket, data, source, sourceSize) }
                     } else ui.post {
                         if (socket === webSocket) when (data.optString("type")) {
                             "state" -> { latest = data; applyState(data) }
@@ -2070,12 +2076,12 @@ class MainActivity : Activity() {
         val factory = DefaultDataSource.Factory(this, httpFactory)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 15_000,
-                /* maxBufferMs = */ 60_000,
-                /* bufferForPlaybackMs = */ 600,
-                /* bufferForPlaybackAfterRebufferMs = */ 1_000
+                /* minBufferMs = */ 2_500,
+                /* maxBufferMs = */ 10_000,
+                /* bufferForPlaybackMs = */ 400,
+                /* bufferForPlaybackAfterRebufferMs = */ 800
             )
-            .setBackBuffer(15_000, true)
+            .setBackBuffer(5_000, true)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val p = ExoPlayer.Builder(this)
@@ -2256,7 +2262,7 @@ class MainActivity : Activity() {
         note("Left room · Ready for next movie")
     }
     override fun onDestroy() {
-        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); client.dispatcher.executorService.shutdown()
+        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); videoWorker.shutdownNow(); audioWorker.shutdownNow(); client.dispatcher.executorService.shutdown()
         super.onDestroy()
     }
 }
