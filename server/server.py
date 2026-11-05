@@ -246,16 +246,17 @@ async def socket(request):
                                 await peer.send_json(msg)
                             except Exception:
                                 pass
-                elif kind == 'voice':
-                    if not controls.allow():
+                elif kind in ('voice', 'voice_chunk'):
+                    audio = data.get('audio', '')
+                    if not isinstance(audio, str) or len(audio) > 350_000:
                         raise ValueError()
-                    audio = data.get('audio')
-                    if not isinstance(audio, str) or not (0 < len(audio) <= 350_000):
-                        raise ValueError()
+                    msg = {'type': kind, 'audio': audio, 'sender': role}
+                    if 'speaking' in data:
+                        msg['speaking'] = bool(data['speaking'])
                     peer = room.guest if role == 'host' else room.host
                     if peer and not peer.closed:
                         try:
-                            await peer.send_json({'type': 'voice', 'audio': audio, 'sender': role})
+                            await peer.send_json(msg)
                         except Exception:
                             pass
                 else:

@@ -8,10 +8,15 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.LoudnessEnhancer
+import android.media.audiofx.NoiseSuppressor
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -103,6 +108,21 @@ class MainActivity : Activity() {
     private var micTouchStartY = 0f
     private var isTrackingSwipeUp = false
     private var activeVoicePlayer: MediaPlayer? = null
+
+    // Idea 2: Smart Open-Mic Live Voice Streaming & VAD
+    @Volatile private var isLiveStreaming = false
+    @Volatile private var isLocalSpeaking = false
+    private var liveAudioRecord: AudioRecord? = null
+    private var acousticEchoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var liveAudioTrack: AudioTrack? = null
+    private var liveAudioEnhancer: LoudnessEnhancer? = null
+    private val incomingSilenceRunnable = Runnable {
+        if (!destroyed) {
+            player?.volume = 1.0f
+            hideHudDelayed()
+        }
+    }
 
     private var isUserSeeking = false
     private var controlsVisible = true
@@ -839,6 +859,18 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N && isInPictureInPictureMode) {
+            // Keep running uninterrupted in PiP
+        } else {
+            if (isVoiceLocked) {
+                stopLiveVoiceStreaming()
+                resetMicButtonStates()
+            }
+        }
+    }
+
     private fun resetMicButtonStates() {
         ui.post {
             isVoiceLocked = false
@@ -858,15 +890,43 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateMicButtonsState(speaking: Boolean) {
+        ui.post {
+            if (!isVoiceLocked) return@post
+            val density = resources.displayMetrics.density
+            if (speaking) {
+                if (::micBtn.isInitialized) {
+                    micBtn.text = "🗣️ Speaking… (Tap: Mute)"
+                    micBtn.background = roundedBackground(Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2)
+                }
+                if (::floatingMicBtn.isInitialized) {
+                    floatingMicBtn.text = "🗣️"
+                    floatingMicBtn.background = roundedBackground(Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 2)
+                }
+            } else {
+                if (::micBtn.isInitialized) {
+                    micBtn.text = "🟢 Open Mic (Tap: Mute)"
+                    micBtn.background = roundedBackground(Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2)
+                }
+                if (::floatingMicBtn.isInitialized) {
+                    floatingMicBtn.text = "🟢"
+                    floatingMicBtn.background = roundedBackground(Color.parseColor("#CC0F766E"), 18f, Color.parseColor("#14B8A6"), 2)
+                }
+            }
+        }
+    }
+
     private fun handleMicTouchEvent(view: View, event: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                // If already locked hands-free, this tap finishes & sends the recording!
+                // If mic is locked in Smart Open-Mic mode, tapping it mutes & unlocks!
                 if (isVoiceLocked) {
                     view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
-                    stopVoiceRecording(sendAudio = true)
+                    isVoiceLocked = false
+                    stopLiveVoiceStreaming()
                     resetMicButtonStates()
+                    note("🎙️ Mic muted")
                     return true
                 }
 
@@ -885,7 +945,7 @@ class MainActivity : Activity() {
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (isTrackingSwipeUp && isRecording && !isVoiceLocked) {
+                if (isTrackingSwipeUp && !isVoiceLocked) {
                     val deltaY = micTouchStartY - event.rawY // Dragging upwards
                     val lockThreshold = 45f * density // 45dp swipe-up threshold
                     if (deltaY >= lockThreshold) {
@@ -899,27 +959,34 @@ class MainActivity : Activity() {
                             }
                         } catch (_: Exception) {}
 
-                        // Subtle bounce to confirm lock
+                        // Subtle bounce animation to confirm lock
                         view.animate().scaleX(1.25f).scaleY(1.25f).setDuration(120).withEndAction {
                             view.animate().scaleX(1.1f).scaleY(1.1f).setDuration(120).start()
                         }.start()
 
-                        if (::micBtn.isInitialized) {
-                            micBtn.text = "🔒 Talking… Tap to Send"
-                            micBtn.background = roundedBackground(Color.parseColor("#B91C1C"), 14f, Color.parseColor("#EF4444"), 2)
+                        // Abort regular M4A recording without sending
+                        if (isRecording) {
+                            isRecording = false
+                            try {
+                                recorder?.stop()
+                                recorder?.release()
+                            } catch (_: Exception) {}
+                            recorder = null
+                            recordFile?.delete()
+                            recordFile = null
                         }
-                        if (::floatingMicBtn.isInitialized) {
-                            floatingMicBtn.text = "🔒"
-                            floatingMicBtn.background = roundedBackground(Color.parseColor("#CCB91C1C"), 18f, Color.parseColor("#EF4444"), 2)
-                        }
-                        note("🔒 Mic locked! Speak freely, tap mic again to send.")
+
+                        // Activate Smart Open-Mic Live Voice Streaming!
+                        updateMicButtonsState(speaking = false)
+                        startLiveVoiceStreaming()
+                        note("🟢 Open Mic active! Speak freely. Tap mic to mute.")
                     }
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 if (isVoiceLocked) {
-                    // Hands-free mode is locked! Keep recording while finger is lifted
+                    // Smart Open-Mic mode is active! Keep streaming hands-free
                     return true
                 }
                 view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
@@ -938,6 +1005,243 @@ class MainActivity : Activity() {
             }
         }
         return false
+    }
+
+    private fun startLiveVoiceStreaming() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 101)
+            return
+        }
+        if (isLiveStreaming) return
+        isLiveStreaming = true
+
+        worker.execute {
+            try {
+                val sampleRate = 16000
+                val channelConfig = AudioFormat.CHANNEL_IN_MONO
+                val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+                val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+                val chunkSize = 3200 // 200ms at 16kHz 16-bit (6400 bytes)
+                val bufferSize = maxOf(minBufSize, chunkSize * 2)
+
+                val record = try {
+                    AudioRecord(
+                        MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                        sampleRate,
+                        channelConfig,
+                        audioFormat,
+                        bufferSize
+                    ).takeIf { it.state == AudioRecord.STATE_INITIALIZED }
+                } catch (_: Exception) { null } ?: AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize
+                )
+
+                if (record.state != AudioRecord.STATE_INITIALIZED) {
+                    ui.post { note("Cannot start microphone") }
+                    return@execute
+                }
+
+                val sessionId = record.audioSessionId
+                try {
+                    if (AcousticEchoCanceler.isAvailable()) {
+                        acousticEchoCanceler = AcousticEchoCanceler.create(sessionId)?.apply {
+                            enabled = true
+                        }
+                    }
+                    if (NoiseSuppressor.isAvailable()) {
+                        noiseSuppressor = NoiseSuppressor.create(sessionId)?.apply {
+                            enabled = true
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                record.startRecording()
+                liveAudioRecord = record
+
+                val shortBuffer = ShortArray(chunkSize)
+                val byteBuffer = ByteArray(chunkSize * 2)
+                var lastSpeechTime = 0L
+                var localSpeaking = false
+
+                while (isLiveStreaming && !destroyed) {
+                    val readShorts = record.read(shortBuffer, 0, chunkSize)
+                    if (readShorts <= 0) continue
+
+                    // Calculate RMS amplitude for Voice Activity Detection
+                    var sum = 0.0
+                    for (i in 0 until readShorts) {
+                        val s = shortBuffer[i].toLong()
+                        sum += (s * s)
+                    }
+                    val rms = kotlin.math.sqrt(sum / readShorts)
+
+                    val now = System.currentTimeMillis()
+                    val isSpeech = rms >= 1000.0
+
+                    if (isSpeech) {
+                        lastSpeechTime = now
+                        if (!localSpeaking) {
+                            localSpeaking = true
+                            isLocalSpeaking = true
+                            ui.post {
+                                if (destroyed) return@post
+                                player?.volume = 0.15f
+                                showHud("🗣️ You're speaking…")
+                                updateMicButtonsState(speaking = true)
+                            }
+                        }
+                    }
+
+                    if (localSpeaking) {
+                        if (!isSpeech && (now - lastSpeechTime > 1200L)) {
+                            // Silence lasting > 1.2s: restore movie volume
+                            localSpeaking = false
+                            isLocalSpeaking = false
+                            ui.post {
+                                if (destroyed) return@post
+                                player?.volume = 1.0f
+                                hideHudDelayed()
+                                updateMicButtonsState(speaking = false)
+                            }
+                            send(JSONObject().put("type", "voice_chunk").put("audio", "").put("speaking", false))
+                        } else {
+                            // Stream speech PCM chunk
+                            for (i in 0 until readShorts) {
+                                val v = shortBuffer[i].toInt()
+                                byteBuffer[i * 2] = (v and 0xFF).toByte()
+                                byteBuffer[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                            }
+                            val b64 = android.util.Base64.encodeToString(
+                                byteBuffer, 0, readShorts * 2, android.util.Base64.NO_WRAP
+                            )
+                            send(JSONObject().put("type", "voice_chunk").put("audio", b64).put("speaking", true))
+                        }
+                    }
+                }
+
+                try {
+                    record.stop()
+                    record.release()
+                } catch (_: Exception) {}
+                try { acousticEchoCanceler?.release() } catch (_: Exception) {}
+                try { noiseSuppressor?.release() } catch (_: Exception) {}
+                acousticEchoCanceler = null
+                noiseSuppressor = null
+                liveAudioRecord = null
+
+            } catch (e: Exception) {
+                ui.post { note("Live mic error: ${e.message}") }
+            }
+        }
+    }
+
+    private fun stopLiveVoiceStreaming() {
+        isLiveStreaming = false
+        isLocalSpeaking = false
+        try {
+            liveAudioRecord?.stop()
+            liveAudioRecord?.release()
+        } catch (_: Exception) {}
+        try { acousticEchoCanceler?.release() } catch (_: Exception) {}
+        try { noiseSuppressor?.release() } catch (_: Exception) {}
+        acousticEchoCanceler = null
+        noiseSuppressor = null
+        liveAudioRecord = null
+        ui.post {
+            player?.volume = 1.0f
+            hideHudDelayed()
+        }
+        worker.execute {
+            send(JSONObject().put("type", "voice_chunk").put("audio", "").put("speaking", false))
+        }
+    }
+
+    @Synchronized
+    private fun getOrCreateLiveAudioTrack(): AudioTrack {
+        var track = liveAudioTrack
+        if (track == null || track.state != AudioTrack.STATE_INITIALIZED) {
+            val sampleRate = 16000
+            val minBufSize = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val bufferSize = maxOf(minBufSize * 2, 8000)
+            track = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            try {
+                liveAudioEnhancer?.release()
+                liveAudioEnhancer = LoudnessEnhancer(track.audioSessionId).apply {
+                    setTargetGain(1200) // +12 dB clarity boost
+                    enabled = true
+                }
+            } catch (_: Exception) {}
+            track.play()
+            liveAudioTrack = track
+        }
+        return track
+    }
+
+    private fun stopLiveAudioTrack() {
+        synchronized(this) {
+            try {
+                liveAudioEnhancer?.release()
+            } catch (_: Exception) {}
+            liveAudioEnhancer = null
+            try {
+                liveAudioTrack?.apply {
+                    stop()
+                    flush()
+                    release()
+                }
+            } catch (_: Exception) {}
+            liveAudioTrack = null
+        }
+    }
+
+    private fun handleIncomingVoiceChunk(base64: String, isSpeaking: Boolean) {
+        if (destroyed) return
+        if (isSpeaking && base64.isNotEmpty()) {
+            worker.execute {
+                try {
+                    val pcmBytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
+                    getOrCreateLiveAudioTrack().write(pcmBytes, 0, pcmBytes.size)
+                } catch (_: Exception) {}
+            }
+            ui.post {
+                if (destroyed) return@post
+                player?.volume = 0.15f
+                showHud("🗣️ Friend speaking…")
+                ui.removeCallbacks(incomingSilenceRunnable)
+                ui.postDelayed(incomingSilenceRunnable, 1500L)
+            }
+        } else if (!isSpeaking) {
+            ui.post {
+                if (destroyed) return@post
+                ui.removeCallbacks(incomingSilenceRunnable)
+                player?.volume = 1.0f
+                hideHudDelayed()
+            }
+        }
     }
 
     private fun startVoiceRecording() {
@@ -1545,6 +1849,11 @@ class MainActivity : Activity() {
                                 val audio = data.optString("audio")
                                 if (audio.isNotEmpty()) playIncomingVoice(audio)
                             }
+                            "voice_chunk" -> {
+                                val audio = data.optString("audio")
+                                val isSpeaking = data.optBoolean("speaking", false)
+                                handleIncomingVoiceChunk(audio, isSpeaking)
+                            }
                             "error" -> note(data.optString("message"))
                         }
                     }
@@ -1729,7 +2038,11 @@ class MainActivity : Activity() {
         ui.removeCallbacks(progressUpdater)
         ui.removeCallbacks(hideControlsRunnable)
         ui.removeCallbacks(hideHudRunnable)
+        ui.removeCallbacks(incomingSilenceRunnable)
+        if (isVoiceLocked) stopLiveVoiceStreaming()
+        stopLiveAudioTrack()
         if (isRecording) stopVoiceRecording(sendAudio = false)
+        resetMicButtonStates()
         try { activeVoicePlayer?.release() } catch (_: Exception) {}
         activeVoicePlayer = null
         player?.volume = 1.0f
@@ -1743,7 +2056,7 @@ class MainActivity : Activity() {
         note("Left room · Ready for next movie")
     }
     override fun onDestroy() {
-        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); client.dispatcher.executorService.shutdown()
+        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(incomingSilenceRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); client.dispatcher.executorService.shutdown()
         super.onDestroy()
     }
 }
