@@ -39,10 +39,19 @@ class Room:
     def state(self):
         now = time.monotonic()
         pos = self.position + (int((now - self.updated)*1000) if self.playing else 0)
-        return dict(type='state', position=pos, playing=self.playing)
+        return dict(
+            type='state',
+            position=pos,
+            playing=self.playing,
+            guestConnected=self.guest is not None and not self.guest.closed,
+            guestReady=bool(self.ready.get('guest', False))
+        )
 
 async def broadcast(room):
-    effective = room.desired and all(room.ready.values()) and room.host is not None and room.guest is not None
+    if room.guest is None:
+        effective = room.desired and bool(room.ready.get('host', False)) and room.host is not None
+    else:
+        effective = room.desired and all(room.ready.values()) and room.host is not None and not room.guest.closed
     if effective != room.playing:
         room.position = room.state()['position']
         room.updated = time.monotonic()

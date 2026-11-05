@@ -99,6 +99,8 @@ class MainActivity : Activity() {
     private lateinit var timeCurrent: TextView
     private lateinit var timeTotal: TextView
     private lateinit var bottomControls: LinearLayout
+    private lateinit var bPlay: Button
+    private lateinit var bPause: Button
 
     // Push-to-Talk (Walkie-Talkie) State
     private var recorder: MediaRecorder? = null
@@ -919,14 +921,14 @@ class MainActivity : Activity() {
             textSize = 12f
             setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt())
         }
-        val bPlay = styledButton("▶ Play", Color.parseColor("#2563EB")) {
+        bPlay = styledButton("▶ Play", Color.parseColor("#2563EB")) {
             control(player?.currentPosition ?: 0L, true)
         }.apply {
             layoutParams = ctrlWeightParams()
             textSize = 12f
             setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt())
         }
-        val bPause = styledButton("⏸ Pause", Color.parseColor("#475569")) {
+        bPause = styledButton("⏸ Pause", Color.parseColor("#475569")) {
             control(player?.currentPosition ?: 0L, false)
         }.apply {
             layoutParams = ctrlWeightParams()
@@ -1980,7 +1982,7 @@ class MainActivity : Activity() {
                         connecting = false
                         setupPlayer()
                         updateScreenMode()
-                        note(if (host) "🟢 Both ready! Tap Play to begin." else "🟢 Joined! Waiting for host to press Play.")
+                        note(if (host) "🟢 Ready! Tap Play to preview or share invite." else "🟢 Joined! Buffering movie…")
                     }
                 }
             }
@@ -2094,8 +2096,10 @@ class MainActivity : Activity() {
                         note(if (pct > 0) "Buffering $pct%…" else "Buffering…")
                     }
                     Player.STATE_READY -> {
-                        note(if (player?.playWhenReady == true) "▶ Playing" else "⏸ Paused")
-                        if (player?.playWhenReady == true) resetControlsTimer() else setControlsVisible(true)
+                        val isPlaying = player?.playWhenReady == true
+                        updatePlayPauseButtons(isPlaying)
+                        note(if (isPlaying) "▶ Playing" else "⏸ Paused")
+                        if (isPlaying) resetControlsTimer() else setControlsVisible(true)
                     }
                     Player.STATE_ENDED -> control(p.currentPosition, false)
                     Player.STATE_IDLE -> note("Player idle")
@@ -2117,11 +2121,53 @@ class MainActivity : Activity() {
         ui.removeCallbacks(progressUpdater)
         ui.post(progressUpdater)
     }
+
+    private fun updatePlayPauseButtons(isPlaying: Boolean) {
+        ui.post {
+            if (!destroyed && ::bPlay.isInitialized && ::bPause.isInitialized) {
+                if (isPlaying) {
+                    bPlay.background = roundedBackground(Color.parseColor("#10B981"), 10f)
+                    bPlay.text = "▶ Playing"
+                    bPause.background = roundedBackground(Color.parseColor("#334155"), 10f)
+                    bPause.text = "⏸ Pause"
+                } else {
+                    bPlay.background = roundedBackground(Color.parseColor("#2563EB"), 10f)
+                    bPlay.text = "▶ Play"
+                    bPause.background = roundedBackground(Color.parseColor("#DC2626"), 10f)
+                    bPause.text = "⏸ Paused"
+                }
+            }
+        }
+    }
+
     private fun applyState(data: JSONObject) {
         val p = player ?: return
         val position = data.getLong("position")
         val playing = data.getBoolean("playing")
+        val guestConnected = data.optBoolean("guestConnected", false)
+        val guestReady = data.optBoolean("guestReady", false)
+
         p.playWhenReady = playing
+        updatePlayPauseButtons(playing)
+
+        if (host) {
+            if (!guestConnected) {
+                note("⏳ Solo mode · Waiting for friend to join (${code})…")
+            } else if (!guestReady) {
+                note("⏳ Friend joined! Buffering movie…")
+            } else if (playing) {
+                note("▶ Watching together in sync")
+            } else {
+                note("⏸ Paused (Both in sync)")
+            }
+        } else {
+            if (playing) {
+                note("▶ Watching together in sync")
+            } else {
+                note("⏸ Paused by host/friend")
+            }
+        }
+
         if (playing) {
             resetControlsTimer()
             val drift = position - p.currentPosition

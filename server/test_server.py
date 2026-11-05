@@ -257,6 +257,33 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res, {'type': 'reaction', 'emoji': '🍿', 'sender': 'guest'})
         await guest.close()
 
+    async def test_solo_host_playback_and_guest_sync(self):
+        # Create room and connect ONLY host
+        async with self.client.post(self.base+'/rooms', headers=CREATE_HEADERS, json={'size':600000, 'mime':'video/mp4'}) as response:
+            room = await response.json()
+        code = room['code']
+        host_headers = {'Authorization': 'Bearer ' + room['hostToken']}
+        host = await self.client.ws_connect(self.base+f'/rooms/{code}/ws', headers=host_headers)
+        state1 = await host.receive_json()
+        self.assertFalse(state1['playing'])
+        self.assertFalse(state1['guestConnected'])
+
+        # Host sends ready=True and play command
+        await host.send_json({'type': 'ready', 'ready': True})
+        await host.receive_json() # response from ready
+
+        await host.send_json({'type': 'control', 'position': 5000, 'playing': True})
+        state2 = await host.receive_json()
+        self.assertTrue(state2['playing'])
+        self.assertEqual(state2['position'], 5000)
+
+        # Host pauses
+        await host.send_json({'type': 'control', 'position': 8000, 'playing': False})
+        state3 = await host.receive_json()
+        self.assertFalse(state3['playing'])
+        self.assertEqual(state3['position'], 8000)
+        await host.close()
+
     async def test_push_to_talk_voice_relay(self):
         room, host = await self.room()
         code = room['code']
