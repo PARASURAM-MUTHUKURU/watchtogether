@@ -2023,7 +2023,16 @@ class MainActivity : Activity() {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 ui.post {
                     if (socket === webSocket) {
-                        if (token.isNotEmpty() && !destroyed) {
+                        val is404 = response?.code == 404 || t.message?.contains("404") == true
+                        if (is404) {
+                            val wasHost = host
+                            leave()
+                            if (wasHost) {
+                                note("Room expired on server. Tap 'Process & Create Room' to start fresh.")
+                            } else {
+                                note("Room expired or closed by host. Ask host for a new invite link.")
+                            }
+                        } else if (token.isNotEmpty() && !destroyed) {
                             scheduleReconnect(t.message ?: "network error")
                         } else {
                             leave()
@@ -2167,7 +2176,10 @@ class MainActivity : Activity() {
                 note("⏸ Paused (Both in sync)")
             }
         } else {
-            if (playing) {
+            val hostConnected = data.optBoolean("hostConnected", true)
+            if (!hostConnected) {
+                note("⏳ Host temporarily reconnecting… playback paused")
+            } else if (playing) {
                 note("▶ Watching together in sync")
             } else {
                 note("⏸ Paused by host/friend")
@@ -2237,6 +2249,21 @@ class MainActivity : Activity() {
         }
     }
     private fun leave() {
+        val roomToRevoke = code
+        val tokenToRevoke = token
+        val wasHost = host
+        if (wasHost && roomToRevoke.isNotEmpty() && tokenToRevoke.isNotEmpty()) {
+            worker.execute {
+                try {
+                    val req = Request.Builder()
+                        .url("$base/rooms/$roomToRevoke")
+                        .delete()
+                        .header("Authorization", "Bearer $tokenToRevoke")
+                        .build()
+                    client.newCall(req).execute().close()
+                } catch (_: Exception) {}
+            }
+        }
         generation++
         reconnectAttempts = 0
         ui.removeCallbacks(reconnectTask)

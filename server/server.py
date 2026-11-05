@@ -34,6 +34,7 @@ class Room:
     ready: dict = field(default_factory=lambda: dict(host=False, guest=False))
     updated: float = field(default_factory=time.monotonic)
     created: float = field(default_factory=time.monotonic)
+    host_disconnected: float = 0.0
     stream_slots: object = field(default_factory=lambda: asyncio.Semaphore(4))
 
     def state(self):
@@ -43,6 +44,7 @@ class Room:
             type='state',
             position=pos,
             playing=self.playing,
+            hostConnected=self.host is not None and not self.host.closed,
             guestConnected=self.guest is not None and not self.guest.closed,
             guestReady=bool(self.ready.get('guest', False))
         )
@@ -154,7 +156,13 @@ async def sweep(app):
             await asyncio.sleep(policy.sweep_interval)
             now = time.monotonic()
             for room in list(app[ROOMS].values()):
-                if now >= room.expires or (room.host is None and now-room.created >= policy.unattached_ttl):
+                host_abandoned = (
+                    room.host is None and (
+                        (room.host_disconnected > 0 and now - room.host_disconnected >= policy.unattached_ttl) or
+                        (room.host_disconnected == 0 and now - room.created >= policy.unattached_ttl)
+                    )
+                )
+                if now >= room.expires or host_abandoned:
                     await close_room(app, room)
         except asyncio.CancelledError:
             break
@@ -175,6 +183,16 @@ async def socket(request):
         raise web.HTTPConflict(text='This room role is already connected')
     # Reserve before the handshake await; two simultaneous sockets cannot take a role.
     room.reserved.add(role)
+    try:
+        old_ws = getattr(room, role)
+        if old_ws is not None and not old_ws.closed:
+            try:
+                await old_ws.close(code=1000, message=b'Replaced by new connection')
+            except Exception:
+                pass
+            setattr(room, role, None)
+    except Exception:
+        pass
     ws = web.WebSocketResponse(heartbeat=20, max_msg_size=CHUNK*2, compress=False)
     policy = request.app[SECURITY]
     messages, controls = Bucket(policy.ws_per_second, 1), Bucket(policy.controls_per_second, 1)
@@ -184,6 +202,8 @@ async def socket(request):
             await ws.close(code=1008, message=b'Room closed')
             return ws
         setattr(room, role, ws)
+        if role == 'host':
+            room.host_disconnected = 0.0
         await broadcast(room)
         async for msg in ws:
             if room.revoked or time.monotonic() >= room.expires:
@@ -282,8 +302,11 @@ async def socket(request):
             room.playing = False
             room.updated = time.monotonic()
             if role == 'host':
-                await close_room(request.app, room)
-            elif not room.revoked:
+                room.host_disconnected = time.monotonic()
+                for future in list(room.pending.values()):
+                    if not future.done():
+                        future.set_exception(IOError('Host disconnected'))
+            if not room.revoked:
                 await broadcast(room)
     return ws
 

@@ -117,11 +117,47 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await until(lambda d:d.get('playing') is True)
         async with self.client.get(self.base+f"/rooms/{info['code']}/ws",headers=self.guest_headers) as response:
             self.assertEqual(response.status,409)
-        await host.close()
+        async with self.client.delete(self.base+f"/rooms/{info['code']}", headers=self.host_headers) as response:
+            self.assertEqual(response.status, 204)
         await until(lambda d:d.get('type')=='error')
         await guest.close()
         async with self.client.get(self.movie,headers=self.guest_headers) as response:
             self.assertEqual(response.status,404)
+
+    async def test_host_disconnect_grace_period_and_reconnect(self):
+        info, host = await self.room()
+        guest = await self.client.ws_connect(self.base+f"/rooms/{info['code']}/ws", headers=self.guest_headers)
+        await host.send_json({'type': 'ready', 'ready': True})
+        await guest.send_json({'type': 'ready', 'ready': True})
+
+        async def until(predicate):
+            for _ in range(15):
+                data = await guest.receive_json(timeout=2)
+                if predicate(data): return data
+            self.fail('Expected state was not received')
+
+        # Host socket drops (e.g. app switch, screen lock, Wi-Fi handover)
+        await host.close()
+
+        # Guest receives state broadcast (playing: False, hostConnected: False) but room is NOT destroyed!
+        data = await until(lambda d: d.get('hostConnected') is False)
+        self.assertFalse(data.get('playing'))
+
+        # Room is still alive and NOT 404!
+        self.assertIn(info['code'], self.app[ROOMS])
+
+        # Host reconnects seamlessly with original hostToken
+        host2 = await self.client.ws_connect(self.base+f"/rooms/{info['code']}/ws", headers=self.host_headers)
+        self.assertIsNotNone(host2)
+        self.assertIsNotNone(self.app[ROOMS][info['code']].host)
+        self.assertFalse(self.app[ROOMS][info['code']].host.closed)
+
+        # Guest receives state update indicating host is reconnected!
+        data2 = await until(lambda d: d.get('hostConnected') is True)
+        self.assertTrue(data2.get('hostConnected'))
+
+        await host2.close()
+        await guest.close()
 
     async def test_input_validation(self):
         for size in [0,-1,True,'100',2**63]:
