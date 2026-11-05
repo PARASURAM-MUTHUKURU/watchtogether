@@ -99,6 +99,9 @@ class MainActivity : Activity() {
     private var recordFile: File? = null
     private var recordStartTime = 0L
     private var isRecording = false
+    private var isVoiceLocked = false
+    private var micTouchStartY = 0f
+    private var isTrackingSwipeUp = false
     private var activeVoicePlayer: MediaPlayer? = null
 
     private var isUserSeeking = false
@@ -836,41 +839,100 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun resetMicButtonStates() {
+        ui.post {
+            isVoiceLocked = false
+            isTrackingSwipeUp = false
+            if (::micBtn.isInitialized) {
+                micBtn.text = "🎙️ Talk"
+                micBtn.background = roundedBackground(Color.parseColor("#059669"), 14f)
+                micBtn.scaleX = 1f
+                micBtn.scaleY = 1f
+            }
+            if (::floatingMicBtn.isInitialized) {
+                floatingMicBtn.text = "🎙️"
+                floatingMicBtn.background = roundedBackground(Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
+                floatingMicBtn.scaleX = 1f
+                floatingMicBtn.scaleY = 1f
+            }
+        }
+    }
+
     private fun handleMicTouchEvent(view: View, event: MotionEvent): Boolean {
+        val density = resources.displayMetrics.density
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
+                // If already locked hands-free, this tap finishes & sends the recording!
+                if (isVoiceLocked) {
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                    stopVoiceRecording(sendAudio = true)
+                    resetMicButtonStates()
+                    return true
+                }
+
+                micTouchStartY = event.rawY
+                isTrackingSwipeUp = true
                 view.animate().scaleX(1.15f).scaleY(1.15f).setDuration(100).start()
                 if (::micBtn.isInitialized) {
-                    micBtn.text = "🔴 Recording…"
+                    micBtn.text = "🔴 Swipe up 🔒"
                     micBtn.background = roundedBackground(Color.parseColor("#DC2626"), 14f)
                 }
                 if (::floatingMicBtn.isInitialized) {
+                    floatingMicBtn.text = "🔒"
                     floatingMicBtn.background = roundedBackground(Color.parseColor("#DC2626"), 18f)
                 }
                 startVoiceRecording()
                 return true
             }
+            MotionEvent.ACTION_MOVE -> {
+                if (isTrackingSwipeUp && isRecording && !isVoiceLocked) {
+                    val deltaY = micTouchStartY - event.rawY // Dragging upwards
+                    val lockThreshold = 45f * density // 45dp swipe-up threshold
+                    if (deltaY >= lockThreshold) {
+                        isVoiceLocked = true
+                        isTrackingSwipeUp = false
+                        try {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(
+                                    android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE)
+                                )
+                            }
+                        } catch (_: Exception) {}
+
+                        // Subtle bounce to confirm lock
+                        view.animate().scaleX(1.25f).scaleY(1.25f).setDuration(120).withEndAction {
+                            view.animate().scaleX(1.1f).scaleY(1.1f).setDuration(120).start()
+                        }.start()
+
+                        if (::micBtn.isInitialized) {
+                            micBtn.text = "🔒 Talking… Tap to Send"
+                            micBtn.background = roundedBackground(Color.parseColor("#B91C1C"), 14f, Color.parseColor("#EF4444"), 2)
+                        }
+                        if (::floatingMicBtn.isInitialized) {
+                            floatingMicBtn.text = "🔒"
+                            floatingMicBtn.background = roundedBackground(Color.parseColor("#CCB91C1C"), 18f, Color.parseColor("#EF4444"), 2)
+                        }
+                        note("🔒 Mic locked! Speak freely, tap mic again to send.")
+                    }
+                }
+                return true
+            }
             MotionEvent.ACTION_UP -> {
+                if (isVoiceLocked) {
+                    // Hands-free mode is locked! Keep recording while finger is lifted
+                    return true
+                }
                 view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
-                if (::micBtn.isInitialized) {
-                    micBtn.text = "🎙️ Talk"
-                    micBtn.background = roundedBackground(Color.parseColor("#059669"), 14f)
-                }
-                if (::floatingMicBtn.isInitialized) {
-                    floatingMicBtn.background = roundedBackground(Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
-                }
+                resetMicButtonStates()
                 stopVoiceRecording(sendAudio = true)
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (isVoiceLocked) {
+                    return true
+                }
                 view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
-                if (::micBtn.isInitialized) {
-                    micBtn.text = "🎙️ Talk"
-                    micBtn.background = roundedBackground(Color.parseColor("#059669"), 14f)
-                }
-                if (::floatingMicBtn.isInitialized) {
-                    floatingMicBtn.background = roundedBackground(Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
-                }
+                resetMicButtonStates()
                 stopVoiceRecording(sendAudio = false)
                 return true
             }
@@ -923,6 +985,9 @@ class MainActivity : Activity() {
     private fun stopVoiceRecording(sendAudio: Boolean) {
         if (!isRecording) return
         isRecording = false
+        isVoiceLocked = false
+        isTrackingSwipeUp = false
+        resetMicButtonStates()
         // Restore movie volume immediately after speaking
         player?.volume = 1.0f
         hideHudDelayed()
@@ -1116,8 +1181,9 @@ class MainActivity : Activity() {
             val density = resources.displayMetrics.density
             val tv = TextView(this).apply {
                 text = emoji
-                textSize = 28f
+                textSize = 38f
                 alpha = 0f
+                setShadowLayer(10f * density, 0f, 3f * density, Color.parseColor("#B3000000"))
                 layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                     gravity = Gravity.BOTTOM or Gravity.START
                 }
@@ -1127,29 +1193,43 @@ class MainActivity : Activity() {
             val containerW = emojiContainer.width.takeIf { it > 0 } ?: (300 * density).toInt()
             val containerH = emojiContainer.height.takeIf { it > 0 } ?: (200 * density).toInt()
 
-            val startX = (containerW * (0.45f + (Math.random().toFloat() * 0.45f))).coerceIn(0f, (containerW - 40 * density))
-            val startY = containerH * 0.85f
+            val startX = (containerW * (0.20f + (Math.random().toFloat() * 0.65f))).coerceIn(15f * density, (containerW - 55 * density).toFloat())
+            val startY = containerH * 0.82f
             tv.x = startX
             tv.y = startY
 
-            val driftX = (Math.random().toFloat() - 0.5f) * 60f * density
-            val targetY = startY - (containerH * 0.7f)
+            val driftX = (Math.random().toFloat() - 0.5f) * 80f * density
+            val targetY = startY - (containerH * 0.72f)
 
+            tv.scaleX = 0.4f
+            tv.scaleY = 0.4f
+
+            // 1. Pop in clearly (350ms)
             tv.animate()
                 .alpha(1f)
-                .scaleX(1.3f)
-                .scaleY(1.3f)
-                .setDuration(200)
+                .scaleX(1.35f)
+                .scaleY(1.35f)
+                .setDuration(350)
                 .withEndAction {
+                    // 2. Slow, graceful drift upwards staying fully visible (2600ms)
                     tv.animate()
                         .x(startX + driftX)
                         .y(targetY)
-                        .scaleX(1.0f)
-                        .scaleY(1.0f)
-                        .alpha(0f)
-                        .setDuration(1300)
+                        .scaleX(1.1f)
+                        .scaleY(1.1f)
+                        .setDuration(2600)
                         .withEndAction {
-                            emojiContainer.removeView(tv)
+                            // 3. Gentle fade out at the very top (900ms)
+                            tv.animate()
+                                .alpha(0f)
+                                .y(targetY - (25f * density))
+                                .scaleX(0.85f)
+                                .scaleY(0.85f)
+                                .setDuration(900)
+                                .withEndAction {
+                                    emojiContainer.removeView(tv)
+                                }
+                                .start()
                         }
                         .start()
                 }
