@@ -1,0 +1,17 @@
+.gradle/
+build/
+local.properties
+__pycache__/
+.venv/
+*.apk
+.env
+.env.*
+!.env.example
+cloudflared.exe
+.idea/
+*.iml
+.DS_Store
+android/.gradle/
+android/app/build/
+android/build/
+

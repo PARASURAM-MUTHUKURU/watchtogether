@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: watchtogether-relay
+    runtime: python
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: BIND_HOST
+        value: 0.0.0.0
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: WATCHTOGETHER_CREATOR_KEY
+        value: lbj1t0uyEHOgRhuDXI4r2OjLvNM9fpZ8vqNHzDpsmeo

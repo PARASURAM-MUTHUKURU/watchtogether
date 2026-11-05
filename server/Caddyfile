@@ -1,0 +1,4 @@
+# Replace with your own hostname; point its DNS to your server first.
+watch.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
