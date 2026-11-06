@@ -2018,6 +2018,8 @@ class MainActivity : Activity() {
             }
             require(length > 0) { "Choose a seekable local video with a known size" }
             closeMovieChannel()
+            movie = uri
+            size = length
             val ext = name.substringAfterLast('.', "").lowercase()
             val extMime = when (ext) {
                 "mkv" -> "video/x-matroska"
