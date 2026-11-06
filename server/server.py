@@ -10,6 +10,7 @@ from aiohttp import web, WSMsgType
 from security import Policy, SECURITY, LIMITS, Bucket, digest, matches, bearer, guard, headers
 
 ROOMS = web.AppKey('rooms', dict)
+LOBBY = web.AppKey('lobby', dict)
 CHUNK = 256 * 1024
 MAX_ROOMS = 100
 
@@ -176,6 +177,13 @@ async def lifecycle(app):
     await asyncio.gather(task, return_exceptions=True)
     for room in list(app[ROOMS].values()):
         await close_room(app, room)
+    for entry in list(app.get(LOBBY, {}).values()):
+        ws = entry.get('ws')
+        if ws and not ws.closed:
+            try:
+                await ws.close(code=1001, message=b'Server shutting down')
+            except Exception:
+                pass
 
 async def socket(request):
     room, role = resolve(request)
@@ -391,6 +399,84 @@ async def movie(request):
                 request.transport.close()
     return response
 
+async def broadcast_lobby(app):
+    lobby = app.get(LOBBY, {})
+    peers = [{'id': uid, 'name': data['name']} for uid, data in lobby.items() if data.get('ws') and not data['ws'].closed]
+    msg = {'type': 'lobby_peers', 'peers': peers}
+    for uid, data in list(lobby.items()):
+        ws = data.get('ws')
+        if ws and not ws.closed:
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                pass
+
+async def lobby_socket(request):
+    ws = web.WebSocketResponse(heartbeat=25, compress=False)
+    await ws.prepare(request)
+    app = request.app
+    lobby = app[LOBBY]
+    user_id = None
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                try:
+                    data = msg.json()
+                    kind = data.get('type')
+                    if kind == 'hello':
+                        uid = str(data.get('userId', '')).strip()
+                        name = str(data.get('name', '')).strip()
+                        if not uid or not (0 < len(name) <= 32) or len(uid) > 64:
+                            continue
+                        user_id = uid
+                        old = lobby.get(user_id)
+                        if old and old.get('ws') and not old['ws'].closed and old['ws'] is not ws:
+                            try:
+                                await old['ws'].close(code=1000, message=b'Replaced')
+                            except Exception:
+                                pass
+                        lobby[user_id] = {'name': name, 'ws': ws, 'updated': time.monotonic()}
+                        await broadcast_lobby(app)
+                    elif kind == 'invite_peer':
+                        target_id = data.get('toUserId')
+                        code = data.get('code')
+                        invite = data.get('invite')
+                        from_name = str(data.get('fromName', 'Friend'))[:32]
+                        if target_id and code and invite and target_id in lobby:
+                            target = lobby[target_id]
+                            if target.get('ws') and not target['ws'].closed:
+                                try:
+                                    await target['ws'].send_json({
+                                        'type': 'incoming_invite',
+                                        'fromUserId': user_id,
+                                        'fromName': from_name,
+                                        'code': code,
+                                        'invite': invite
+                                    })
+                                except Exception:
+                                    pass
+                    elif kind == 'invite_response':
+                        to_user_id = data.get('toUserId')
+                        accepted = bool(data.get('accepted'))
+                        if to_user_id and to_user_id in lobby:
+                            peer = lobby[to_user_id]
+                            if peer.get('ws') and not peer['ws'].closed:
+                                try:
+                                    await peer['ws'].send_json({
+                                        'type': 'invite_response',
+                                        'fromUserId': user_id,
+                                        'accepted': accepted
+                                    })
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+    finally:
+        if user_id and user_id in lobby and lobby[user_id].get('ws') is ws:
+            del lobby[user_id]
+            await broadcast_lobby(app)
+    return ws
+
 async def health(request):
     return web.json_response({'ok': True})
 
@@ -401,11 +487,13 @@ def make_app(policy=None):
     app.on_response_prepare.append(headers)
     app.cleanup_ctx.append(lifecycle)
     app[ROOMS] = {}
+    app[LOBBY] = {}
     app.router.add_post('/rooms', create)
     app.router.add_post('/rooms/{code}/join', join)
     app.router.add_delete('/rooms/{code}', revoke)
     app.router.add_get('/rooms/{code}/ws', socket)
     app.router.add_get('/rooms/{code}/movie', movie)
+    app.router.add_get('/lobby/ws', lobby_socket)
     app.router.add_get('/health', health)
     return app
 

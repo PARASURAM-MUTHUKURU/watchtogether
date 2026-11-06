@@ -331,5 +331,71 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res, {'type': 'voice', 'audio': 'AAAA1111', 'sender': 'host'})
         await guest.close()
 
+    async def test_lobby_presence_and_in_app_invite(self):
+        ws_a = await self.client.ws_connect(self.base + '/lobby/ws')
+        await ws_a.send_json({'type': 'hello', 'userId': 'u_a', 'name': 'Parasuram'})
+        msg1 = await ws_a.receive_json(timeout=2)
+        self.assertEqual(msg1['type'], 'lobby_peers')
+        self.assertEqual(len(msg1['peers']), 1)
+        self.assertEqual(msg1['peers'][0]['name'], 'Parasuram')
+
+        ws_b = await self.client.ws_connect(self.base + '/lobby/ws')
+        await ws_b.send_json({'type': 'hello', 'userId': 'u_b', 'name': 'Alex'})
+
+        # Both receive updated peer list
+        async def wait_for_peer(ws, peer_id):
+            for _ in range(10):
+                msg = await ws.receive_json(timeout=2)
+                if msg.get('type') == 'lobby_peers':
+                    ids = [p['id'] for p in msg.get('peers', [])]
+                    if peer_id in ids:
+                        return msg
+            self.fail(f'Peer {peer_id} not found in lobby')
+
+        peers_a = await wait_for_peer(ws_a, 'u_b')
+        self.assertEqual(len(peers_a['peers']), 2)
+
+        # User B reads its own initial lobby_peers
+        initial_b = await ws_b.receive_json(timeout=2)
+        self.assertEqual(initial_b['type'], 'lobby_peers')
+
+        # User A sends invite to User B
+        await ws_a.send_json({
+            'type': 'invite_peer',
+            'toUserId': 'u_b',
+            'fromName': 'Parasuram',
+            'code': 'ROOM123',
+            'invite': 'ROOM123.SECRETTOKEN'
+        })
+
+        invite_msg = await ws_b.receive_json(timeout=2)
+        self.assertEqual(invite_msg['type'], 'incoming_invite')
+        self.assertEqual(invite_msg['fromUserId'], 'u_a')
+        self.assertEqual(invite_msg['fromName'], 'Parasuram')
+        self.assertEqual(invite_msg['code'], 'ROOM123')
+
+        # User B accepts
+        await ws_b.send_json({'type': 'invite_response', 'toUserId': 'u_a', 'accepted': True})
+        resp_msg = await ws_a.receive_json(timeout=2)
+        self.assertEqual(resp_msg['type'], 'invite_response')
+        self.assertTrue(resp_msg['accepted'])
+
+        # User B disconnects
+        await ws_b.close()
+        # User A receives peer list with only User A
+        async def wait_for_peer_gone(ws, peer_id):
+            for _ in range(10):
+                msg = await ws.receive_json(timeout=2)
+                if msg.get('type') == 'lobby_peers':
+                    ids = [p['id'] for p in msg.get('peers', [])]
+                    if peer_id not in ids:
+                        return msg
+            self.fail(f'Peer {peer_id} still found in lobby')
+
+        left_peers = await wait_for_peer_gone(ws_a, 'u_b')
+        self.assertEqual(len(left_peers['peers']), 1)
+
+        await ws_a.close()
+
 if __name__ == '__main__':
     unittest.main()

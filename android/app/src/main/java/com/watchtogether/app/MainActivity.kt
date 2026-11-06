@@ -1,7 +1,9 @@
 package com.watchtogether.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -45,11 +47,13 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.ByteString.Companion.toByteString
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -103,6 +107,17 @@ class MainActivity : Activity() {
     private lateinit var bottomControls: LinearLayout
     private lateinit var bPlay: Button
     private lateinit var bPause: Button
+
+    // In-App Friend Presence & Direct Invites
+    private var myUserId = ""
+    private var myUserName = ""
+    private var lobbySocket: WebSocket? = null
+    private val lobbyReconnectTask = Runnable { connectLobby() }
+    private var onlineFriends = mutableListOf<JSONObject>()
+    private lateinit var userBadge: TextView
+    private lateinit var friendsCard: LinearLayout
+    private lateinit var onlineFriendsContainer: LinearLayout
+    private lateinit var friendsHeaderBtn: Button
 
     // Push-to-Talk (Walkie-Talkie) State
     private var recorder: MediaRecorder? = null
@@ -266,6 +281,15 @@ class MainActivity : Activity() {
                 marginEnd = (6 * density).toInt()
             }
         }
+        friendsHeaderBtn = styledButton("👥 Friends", Color.parseColor("#059669")) {
+            showFriendsInviteDialog()
+        }.apply {
+            textSize = 11f
+            setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = (4 * density).toInt()
+            }
+        }
         val shareHeaderBtn = styledButton("📤 Invite", Color.parseColor("#6366F1")) {
             if (invite.isNotEmpty()) startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "$base|$invite")
@@ -284,6 +308,7 @@ class MainActivity : Activity() {
         }
         sessionHeader.addView(roomCodeBadge)
         sessionHeader.addView(sessionStatus)
+        sessionHeader.addView(friendsHeaderBtn)
         sessionHeader.addView(shareHeaderBtn)
         sessionHeader.addView(leaveBtn)
         mainLayout.addView(sessionHeader)
@@ -295,19 +320,69 @@ class MainActivity : Activity() {
         }
         val setupContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2)
+        }
         val titleText = TextView(this).apply {
             text = "WatchTogether"
-            textSize = 25f
+            textSize = 24f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        userBadge = TextView(this).apply {
+            val name = getUserName()
+            text = "👤 ${if (name.isNotEmpty()) name else "Set Name"} ✏️"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#38BDF8"))
+            background = roundedBackground(Color.parseColor("#1E293B"), 12f, Color.parseColor("#0284C7"), 1)
+            setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+            setOnClickListener { showEditNameDialog(initial = false) }
+        }
+        titleRow.addView(titleText)
+        titleRow.addView(userBadge)
+        setupContent.addView(titleRow)
+
         val subtitleText = TextView(this).apply {
             text = "Pair with a friend in 3 easy steps"
             textSize = 13f
             setTextColor(Color.parseColor("#94A3B8"))
         }
-        setupContent.addView(titleText)
         setupContent.addView(subtitleText)
+
+        // Online Friends Presence Card (In-App Direct Invite)
+        friendsCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(Color.parseColor("#1E293B"), 12f, Color.parseColor("#334155"), 1)
+            setPadding((12 * density).toInt(), (10 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                setMargins(0, (10 * density).toInt(), 0, 0)
+            }
+        }
+        val friendsCardTitle = TextView(this).apply {
+            text = "👥 Friends Online (Tap to Invite Directly)"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#38BDF8"))
+        }
+        friendsCard.addView(friendsCardTitle)
+
+        val friendsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (6 * density).toInt()
+            }
+        }
+        onlineFriendsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        friendsScroll.addView(onlineFriendsContainer)
+        friendsCard.addView(friendsScroll)
+        setupContent.addView(friendsCard)
 
         // 2-Way Role Switcher
         val tabRow = LinearLayout(this).apply {
@@ -956,6 +1031,15 @@ class MainActivity : Activity() {
         setContentView(mainLayout)
         selectTab(true)
         ui.post(tick)
+
+        myUserId = getUserId()
+        myUserName = getUserName()
+        updateOnlineFriendsUI()
+        if (myUserName.isEmpty()) {
+            ui.postDelayed({ showEditNameDialog(initial = true) }, 500)
+        } else {
+            ui.postDelayed({ connectLobby() }, 500)
+        }
     }
 
     override fun onResume() {
@@ -974,6 +1058,9 @@ class MainActivity : Activity() {
                     }
                 }
             } catch (_: Exception) {}
+        }
+        if (getUserName().isNotEmpty() && (lobbySocket == null || !isLobbyConnected)) {
+            connectLobby()
         }
     }
 
@@ -1932,11 +2019,15 @@ class MainActivity : Activity() {
                         val data = JSONObject(response.body!!.string())
                         ui.post { if (!destroyed && connecting && generation == attempt) {
                             code = data.getString("code"); token = data.getString("hostToken"); invite = data.getString("invite"); connect()
-                            try {
-                                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "$base|$invite")
-                                }, "Invite your friend"))
-                            } catch (_: Exception) {}
+                            if (onlineFriends.isNotEmpty()) {
+                                note("🟢 Room created! Tap '👥 Friends' to invite ${onlineFriends[0].optString("name")}, or use '📤 Invite'.")
+                            } else {
+                                try {
+                                    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "$base|$invite")
+                                    }, "Invite your friend"))
+                                } catch (_: Exception) {}
+                            }
                         } }
                     }
                 } catch (e: Exception) { ui.post { if (generation == attempt) { connecting = false; note(e.message ?: "Connection failed") } } }
@@ -1945,8 +2036,11 @@ class MainActivity : Activity() {
         } catch (e: Exception) { connecting = false; note(e.message ?: "Unable to create room") }
     }
     private fun joinRoom() {
+        val rawInvite = inviteInput.text.toString().trim()
+        doJoin(rawInvite)
+    }
+    private fun doJoin(rawInvite: String) {
         try {
-            val rawInvite = inviteInput.text.toString().trim()
             val input = rawInvite.split('|')
             require(input.size == 2) { "Paste the full invite: server|room.token" }
             getPreferences(0).edit().putString("last_invite", rawInvite).apply()
@@ -1972,7 +2066,7 @@ class MainActivity : Activity() {
                     }
                 } catch (e: Exception) { ui.post { if (generation == attempt) { connecting = false; note(e.message ?: "Join failed") } } }
             }
-            note("Redeeming private invite…")
+            note("Connecting to friend's movie…")
         } catch (e: Exception) { connecting = false; note(e.message ?: "Invalid invite") }
     }
     private fun connect() {
@@ -2248,6 +2342,325 @@ class MainActivity : Activity() {
             ws.send(JSONObject().put("type", "chunk").put("id", id).put("error", true).toString())
         }
     }
+
+    private fun getUserName(): String {
+        return getSharedPreferences("watchtogether_prefs", Context.MODE_PRIVATE)
+            .getString("user_name", "") ?: ""
+    }
+
+    private fun setUserName(name: String) {
+        getSharedPreferences("watchtogether_prefs", Context.MODE_PRIVATE)
+            .edit().putString("user_name", name.trim()).apply()
+    }
+
+    private fun getUserId(): String {
+        val prefs = getSharedPreferences("watchtogether_prefs", Context.MODE_PRIVATE)
+        var uid = prefs.getString("user_id", "") ?: ""
+        if (uid.isEmpty()) {
+            uid = UUID.randomUUID().toString().replace("-", "").take(16)
+            prefs.edit().putString("user_id", uid).apply()
+        }
+        return uid
+    }
+
+    private fun showEditNameDialog(initial: Boolean = false) {
+        if (destroyed) return
+        val density = resources.displayMetrics.density
+        val input = EditText(this).apply {
+            hint = "Your name (e.g. Parasuram)"
+            setText(getUserName())
+            setSingleLine(true)
+            setSelection(text.length)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#64748B"))
+            setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
+            background = roundedBackground(Color.parseColor("#0F172A"), 8f, Color.parseColor("#334155"), 1)
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((20 * density).toInt(), (10 * density).toInt(), (20 * density).toInt(), (10 * density).toInt())
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(if (initial) "👋 Welcome! Enter Your Name" else "✏️ Change Display Name")
+            .setMessage(if (initial) "Enter your name so friends can see when you're online and invite you directly to watch movies together." else "Your friends will see this name when you are online.")
+            .setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    setUserName(name)
+                    myUserName = name
+                    if (::userBadge.isInitialized) userBadge.text = "👤 $name ✏️"
+                    note("Hello, $name! 👋")
+                    connectLobby()
+                }
+            }
+            .setCancelable(!initial)
+            .show()
+    }
+
+    @Volatile private var isLobbyConnected = false
+
+    private fun connectLobby() {
+        if (destroyed) return
+        val name = getUserName()
+        if (name.isEmpty()) return
+        val uid = getUserId()
+        val lobbyBase = endpoint()
+        val url = lobbyBase.replaceFirst("https://", "wss://") + "/lobby/ws"
+        val req = Request.Builder().url(url).build()
+
+        lobbySocket?.close(1000, "Reconnecting")
+        lobbySocket = client.newWebSocket(req, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                isLobbyConnected = true
+                ui.post {
+                    if (destroyed) return@post
+                    val hello = JSONObject().put("type", "hello").put("userId", uid).put("name", name)
+                    webSocket.send(hello.toString())
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    val data = JSONObject(text)
+                    when (data.optString("type")) {
+                        "lobby_peers" -> {
+                            val peersArray = data.optJSONArray("peers") ?: JSONArray()
+                            val list = mutableListOf<JSONObject>()
+                            for (i in 0 until peersArray.length()) {
+                                val peer = peersArray.getJSONObject(i)
+                                if (peer.optString("id") != uid) {
+                                    list.add(peer)
+                                }
+                            }
+                            ui.post {
+                                if (!destroyed) {
+                                    onlineFriends = list
+                                    updateOnlineFriendsUI()
+                                }
+                            }
+                        }
+                        "incoming_invite" -> {
+                            val fromName = data.optString("fromName", "A friend")
+                            val fromUid = data.optString("fromUserId")
+                            val inviteCode = data.optString("code")
+                            val invitePayload = data.optString("invite")
+                            ui.post {
+                                if (!destroyed) {
+                                    showIncomingInviteDialog(fromName, fromUid, inviteCode, invitePayload)
+                                }
+                            }
+                        }
+                        "invite_response" -> {
+                            val accepted = data.optBoolean("accepted")
+                            ui.post {
+                                if (!destroyed) {
+                                    if (accepted) {
+                                        note("🎉 Friend accepted! Connecting to movie…")
+                                    } else {
+                                        note("Friend declined or is busy right now.")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                isLobbyConnected = false
+                ui.post {
+                    if (!destroyed) {
+                        ui.removeCallbacks(lobbyReconnectTask)
+                        ui.postDelayed(lobbyReconnectTask, 5000L)
+                    }
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                isLobbyConnected = false
+                ui.post {
+                    if (!destroyed && code != 1000) {
+                        ui.removeCallbacks(lobbyReconnectTask)
+                        ui.postDelayed(lobbyReconnectTask, 5000L)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun updateOnlineFriendsUI() {
+        if (!::onlineFriendsContainer.isInitialized) return
+        val density = resources.displayMetrics.density
+        onlineFriendsContainer.removeAllViews()
+        if (::friendsHeaderBtn.isInitialized) {
+            friendsHeaderBtn.text = "👥 Friends (${onlineFriends.size})"
+        }
+
+        if (onlineFriends.isEmpty()) {
+            val emptyNotice = TextView(this).apply {
+                text = "No friends online right now · Tell a friend to open the app!"
+                textSize = 11f
+                setTextColor(Color.parseColor("#64748B"))
+                setPadding(0, (4 * density).toInt(), 0, (4 * density).toInt())
+            }
+            onlineFriendsContainer.addView(emptyNotice)
+            return
+        }
+
+        for (friend in onlineFriends) {
+            val fName = friend.optString("name", "Friend")
+            val fUid = friend.optString("id")
+            val friendChip = TextView(this).apply {
+                text = "🟢 $fName  ➔ Invite"
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                background = roundedBackground(Color.parseColor("#059669"), 14f)
+                setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    marginEnd = (8 * density).toInt()
+                }
+                setOnClickListener {
+                    if (connected && host && code.isNotEmpty() && invite.isNotEmpty()) {
+                        sendPeerInvite(fUid, fName)
+                        text = "⏳ Invited $fName…"
+                        background = roundedBackground(Color.parseColor("#D97706"), 14f)
+                    } else {
+                        note("Tap 'Process & Create Room' to launch movie, then invite $fName!")
+                        showFriendsInviteDialog()
+                    }
+                }
+            }
+            onlineFriendsContainer.addView(friendChip)
+        }
+    }
+
+    private fun showIncomingInviteDialog(fromName: String, fromUid: String, inviteCode: String, invitePayload: String) {
+        if (destroyed) return
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(
+                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 150, 100, 150), -1)
+                )
+            }
+        } catch (_: Exception) {}
+
+        AlertDialog.Builder(this)
+            .setTitle("🎬 Movie Invitation!")
+            .setMessage("$fromName invited you to watch a movie together right now!")
+            .setPositiveButton("Accept & Watch 🍿") { _, _ ->
+                lobbySocket?.send(JSONObject().put("type", "invite_response").put("toUserId", fromUid).put("accepted", true).toString())
+                if (connected) leave()
+                val fullInvite = "$base|$invitePayload"
+                inviteInput.setText(fullInvite)
+                selectTab(false)
+                doJoin(fullInvite)
+            }
+            .setNegativeButton("Decline") { _, _ ->
+                lobbySocket?.send(JSONObject().put("type", "invite_response").put("toUserId", fromUid).put("accepted", false).toString())
+            }
+            .setCancelable(true)
+            .show()
+    }
+
+    private fun showFriendsInviteDialog() {
+        if (destroyed) return
+        val density = resources.displayMetrics.density
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((16 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
+        }
+
+        if (onlineFriends.isEmpty()) {
+            val emptyMsg = TextView(this).apply {
+                text = "None of your friends are online in the app right now.\n\nYou can still share the room link via WhatsApp, SMS, or other apps using the button below!"
+                textSize = 13f
+                setTextColor(Color.parseColor("#94A3B8"))
+                setPadding(0, 0, 0, (12 * density).toInt())
+            }
+            container.addView(emptyMsg)
+        } else {
+            val tip = TextView(this).apply {
+                text = "Tap a friend to send them a 1-click in-app watch invitation:"
+                textSize = 12f
+                setTextColor(Color.parseColor("#38BDF8"))
+                setPadding(0, 0, 0, (8 * density).toInt())
+            }
+            container.addView(tip)
+            for (friend in onlineFriends) {
+                val fName = friend.optString("name", "Friend")
+                val fUid = friend.optString("id")
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, (6 * density).toInt(), 0, (6 * density).toInt())
+                }
+                val friendLabel = TextView(this).apply {
+                    text = "🟢 $fName (Online)"
+                    textSize = 14f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Color.WHITE)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val inviteBtn = styledButton("🍿 Invite", Color.parseColor("#059669")) {
+                    if (connected && host && code.isNotEmpty() && invite.isNotEmpty()) {
+                        sendPeerInvite(fUid, fName)
+                        note("📨 Sent in-app invite to $fName!")
+                    } else {
+                        note("Create room first to invite $fName")
+                    }
+                }.apply {
+                    textSize = 11f
+                    setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+                }
+                row.addView(friendLabel)
+                row.addView(inviteBtn)
+                container.addView(row)
+            }
+        }
+
+        val shareFallbackBtn = styledButton("📤 Share Link via Other Apps", Color.parseColor("#6366F1")) {
+            if (invite.isNotEmpty()) {
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "$base|$invite")
+                }, "Invite your friend"))
+            } else {
+                note("Launch a room first to get an invite link.")
+            }
+        }.apply {
+            textSize = 12f
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (10 * density).toInt()
+            }
+        }
+        container.addView(shareFallbackBtn)
+
+        AlertDialog.Builder(this)
+            .setTitle("👥 Online Friends (${onlineFriends.size})")
+            .setView(container)
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun sendPeerInvite(targetUid: String, targetName: String) {
+        if (code.isEmpty() || invite.isEmpty()) {
+            note("Launch a room first to invite $targetName")
+            return
+        }
+        val myName = getUserName()
+        val msg = JSONObject()
+            .put("type", "invite_peer")
+            .put("toUserId", targetUid)
+            .put("fromName", myName)
+            .put("code", code)
+            .put("invite", invite)
+        lobbySocket?.send(msg.toString())
+        note("📨 Invited $targetName! Waiting for them to accept…")
+    }
+
     private fun leave() {
         val roomToRevoke = code
         val tokenToRevoke = token
@@ -2289,7 +2702,7 @@ class MainActivity : Activity() {
         note("Left room · Ready for next movie")
     }
     override fun onDestroy() {
-        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); leave(); closeMovieChannel(); worker.shutdownNow(); videoWorker.shutdownNow(); audioWorker.shutdownNow(); client.dispatcher.executorService.shutdown()
+        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); ui.removeCallbacks(lobbyReconnectTask); lobbySocket?.close(1000, "Destroyed"); lobbySocket = null; leave(); closeMovieChannel(); worker.shutdownNow(); videoWorker.shutdownNow(); audioWorker.shutdownNow(); client.dispatcher.executorService.shutdown()
         super.onDestroy()
     }
 }
