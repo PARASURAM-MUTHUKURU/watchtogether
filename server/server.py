@@ -36,7 +36,7 @@ class Room:
     updated: float = field(default_factory=time.monotonic)
     created: float = field(default_factory=time.monotonic)
     host_disconnected: float = 0.0
-    stream_slots: object = field(default_factory=lambda: asyncio.Semaphore(4))
+    stream_slots: object = field(default_factory=lambda: asyncio.Semaphore(16))
 
     def state(self):
         now = time.monotonic()
@@ -45,6 +45,8 @@ class Room:
             type='state',
             position=pos,
             playing=self.playing,
+            mime=self.mime,
+            size=self.size,
             hostConnected=self.host is not None and not self.host.closed,
             guestConnected=self.guest is not None and not self.guest.closed,
             guestReady=bool(self.ready.get('guest', False))
@@ -125,7 +127,7 @@ async def join(request):
     room.guest = None
     guest_token = secrets.token_urlsafe(32)
     room.guest_token = digest(guest_token)
-    return web.json_response(dict(guestToken=guest_token))
+    return web.json_response(dict(guestToken=guest_token, size=room.size, mime=room.mime))
 
 async def close_room(app, room):
     if room.revoked:
@@ -227,6 +229,9 @@ async def socket(request):
                             if len(block) > CHUNK:
                                 raise ValueError()
                             future.set_result(block)
+                            continue
+                        else:
+                            # Future already fulfilled, cancelled, or timed out - safely discard
                             continue
                     await ws.close(code=1008, message=b'Text JSON required')
                 continue
@@ -366,8 +371,6 @@ async def movie(request):
     if request.method == 'HEAD':
         await response.prepare(request)
         return response
-    if room.stream_slots.locked():
-        raise web.HTTPTooManyRequests(text='Too many video connections')
     async with room.stream_slots:
         next_task = None
         try:
@@ -391,12 +394,13 @@ async def movie(request):
                 start += len(block)
             await response.write_eof()
         except (IOError, asyncio.TimeoutError, ConnectionError):
-            if next_task and not next_task.done():
-                next_task.cancel()
             if not response.prepared:
                 raise web.HTTPServiceUnavailable(text='Movie source unavailable')
             if request.transport:
                 request.transport.close()
+        finally:
+            if next_task and not next_task.done():
+                next_task.cancel()
     return response
 
 async def broadcast_lobby(app):
@@ -493,6 +497,7 @@ def make_app(policy=None):
     app.router.add_delete('/rooms/{code}', revoke)
     app.router.add_get('/rooms/{code}/ws', socket)
     app.router.add_get('/rooms/{code}/movie', movie)
+    app.router.add_get(r'/rooms/{code}/movie{ext:.*}', movie)
     app.router.add_get('/lobby/ws', lobby_socket)
     app.router.add_get('/health', health)
     return app

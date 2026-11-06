@@ -44,9 +44,12 @@ def matches(value, expected):
 
 def bearer(request):
     header = request.headers.get('Authorization', '')
-    if not header.startswith('Bearer ') or len(header) > 512:
-        raise web.HTTPUnauthorized(text='Bearer credential required')
-    return header[7:]
+    if header.startswith('Bearer ') and len(header) <= 512:
+        return header[7:]
+    token = request.query.get('token', '')
+    if token and len(token) <= 512:
+        return token
+    raise web.HTTPUnauthorized(text='Bearer credential required')
 
 
 class Bucket:

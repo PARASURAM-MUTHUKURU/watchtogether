@@ -26,8 +26,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*self.tasks, return_exceptions=True)
         await self.runner.cleanup()
 
-    async def room(self, size=600000):
-        async with self.client.post(self.base+'/rooms', headers=CREATE_HEADERS, json={'size':size, 'mime':'video/mp4'}) as response:
+    async def room(self, size=600000, mime='video/mp4'):
+        async with self.client.post(self.base+'/rooms', headers=CREATE_HEADERS, json={'size':size, 'mime':mime}) as response:
             self.assertEqual(response.status, 201)
             room = await response.json()
         code, token = room['invite'].split('.')
@@ -45,7 +45,10 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.tasks.append(asyncio.create_task(serve()))
         async with self.client.post(self.base+f'/rooms/{code}/join', headers=self.invite_headers) as response:
             self.assertEqual(response.status, 200)
-            guest_token = (await response.json())['guestToken']
+            jdata = await response.json()
+            guest_token = jdata['guestToken']
+            self.assertEqual(jdata.get('size'), size)
+            self.assertEqual(jdata.get('mime'), mime)
         self.guest_headers = {'Authorization': 'Bearer '+guest_token}
         return room, host
 
@@ -63,6 +66,10 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status,416)
         async with self.client.get(self.movie) as response:
             self.assertEqual(response.status,401)
+        token_str = self.guest_headers['Authorization'].split()[1]
+        async with self.client.get(f"{self.movie}.mkv?token={token_str}") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.content_length, 600000)
 
     async def test_stream_binary_chunks(self):
         async with self.client.post(self.base+'/rooms', headers=CREATE_HEADERS, json={'size':300000, 'mime':'video/mp4'}) as response:

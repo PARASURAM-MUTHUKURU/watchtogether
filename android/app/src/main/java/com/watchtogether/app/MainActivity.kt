@@ -31,6 +31,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.webkit.MimeTypeMap
 import android.widget.*
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -41,6 +42,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.ui.PlayerView
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -68,7 +70,7 @@ class MainActivity : Activity() {
     private val worker = Executors.newFixedThreadPool(8)
     private val videoWorker = Executors.newFixedThreadPool(8)
     private val audioWorker = Executors.newSingleThreadExecutor()
-    private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
+    private val client = OkHttpClient.Builder().followRedirects(true).followSslRedirects(true).connectTimeout(15, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
     private lateinit var mainLayout: LinearLayout
     private lateinit var setupScrollView: ScrollView
     private lateinit var hostTab: Button
@@ -118,6 +120,11 @@ class MainActivity : Activity() {
     private lateinit var friendsCard: LinearLayout
     private lateinit var onlineFriendsContainer: LinearLayout
     private lateinit var friendsHeaderBtn: Button
+
+    // Guest Video Sync & Metadata
+    private var pendingInitialSeek = 0L
+    private var remoteMime = ""
+    private var remoteSize = 0L
 
     // Push-to-Talk (Walkie-Talkie) State
     private var recorder: MediaRecorder? = null
@@ -251,14 +258,18 @@ class MainActivity : Activity() {
 
         // Active Session Header (Shown only during watching)
         sessionHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
             setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             background = roundedBackground(Color.parseColor("#1E293B"), 10f)
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = (4 * density).toInt()
             }
+        }
+        val topBtnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
         roomCodeBadge = TextView(this).apply {
             text = "Room"
@@ -268,17 +279,9 @@ class MainActivity : Activity() {
             ellipsize = android.text.TextUtils.TruncateAt.END
             typeface = Typeface.DEFAULT_BOLD
             background = roundedBackground(Color.parseColor("#334155"), 6f)
-            setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
-        }
-        sessionStatus = TextView(this).apply {
-            text = "Connecting…"
-            setTextColor(Color.parseColor("#34D399"))
-            textSize = 11f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = (6 * density).toInt()
-                marginEnd = (6 * density).toInt()
+                marginEnd = (4 * density).toInt()
             }
         }
         friendsHeaderBtn = styledButton("👥 Friends", Color.parseColor("#059669")) {
@@ -306,11 +309,24 @@ class MainActivity : Activity() {
             setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        sessionHeader.addView(roomCodeBadge)
+        topBtnRow.addView(roomCodeBadge)
+        topBtnRow.addView(friendsHeaderBtn)
+        topBtnRow.addView(shareHeaderBtn)
+        topBtnRow.addView(leaveBtn)
+        sessionHeader.addView(topBtnRow)
+
+        sessionStatus = TextView(this).apply {
+            text = "Connecting…"
+            setTextColor(Color.parseColor("#34D399"))
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (4 * density).toInt()
+            }
+        }
         sessionHeader.addView(sessionStatus)
-        sessionHeader.addView(friendsHeaderBtn)
-        sessionHeader.addView(shareHeaderBtn)
-        sessionHeader.addView(leaveBtn)
         mainLayout.addView(sessionHeader)
 
         // Setup ScrollView (Holds the 3-step pairing flow)
@@ -1980,13 +1996,39 @@ class MainActivity : Activity() {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
                 if (c.moveToFirst()) { name = c.getString(0); if (!c.isNull(1)) length = c.getLong(1) }
             }
+            var detectedMime: String? = null
             val pfd = contentResolver.openFileDescriptor(uri, "r") ?: throw IllegalStateException("Cannot open movie")
             ParcelFileDescriptor.AutoCloseInputStream(pfd).use { stream ->
-                stream.channel.position(0); if (length < 0) length = stream.channel.size()
+                stream.channel.position(0)
+                val chSize = stream.channel.size()
+                if (chSize > 0) length = chSize
+
+                val headerBuf = ByteBuffer.allocate(16)
+                val readHeader = stream.channel.read(headerBuf, 0)
+                if (readHeader >= 4) {
+                    val b = headerBuf.array()
+                    detectedMime = when {
+                        b[0] == 0x1A.toByte() && b[1] == 0x45.toByte() && b[2] == 0xDF.toByte() && b[3] == 0xA3.toByte() -> "video/x-matroska"
+                        readHeader >= 8 && b[4] == 'f'.code.toByte() && b[5] == 't'.code.toByte() && b[6] == 'y'.code.toByte() && b[7] == 'p'.code.toByte() -> "video/mp4"
+                        readHeader >= 12 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte() && b[3] == 'F'.code.toByte() &&
+                                b[8] == 'A'.code.toByte() && b[9] == 'V'.code.toByte() && b[10] == 'I'.code.toByte() -> "video/x-msvideo"
+                        else -> null
+                    }
+                }
             }
             require(length > 0) { "Choose a seekable local video with a known size" }
             closeMovieChannel()
-            movie = uri; size = length; mime = contentResolver.getType(uri)?.takeIf { it.startsWith("video/") } ?: "video/mp4"
+            val ext = name.substringAfterLast('.', "").lowercase()
+            val extMime = when (ext) {
+                "mkv" -> "video/x-matroska"
+                "mp4", "m4v" -> "video/mp4"
+                "webm" -> "video/webm"
+                "avi" -> "video/x-msvideo"
+                "mov" -> "video/quicktime"
+                "ts", "m2ts" -> "video/mp2t"
+                else -> null
+            }
+            mime = detectedMime ?: extMime ?: contentResolver.getType(uri)?.takeIf { it.startsWith("video/") } ?: "video/mp4"
             fileLabel.text = "✓ $name · ${size / 1024 / 1024} MB"
             fileLabel.setTextColor(Color.parseColor("#34D399"))
             if (autoCreateAfterPick) {
@@ -2059,9 +2101,16 @@ class MainActivity : Activity() {
                             throw IllegalStateException("Host is still connecting. Please wait a moment and tap Join again.")
                         }
                         check(response.isSuccessful) { "Invite expired, used, or unavailable (${response.code}). Ask host for a new room." }
-                        val guestToken = JSONObject(response.body!!.string()).getString("guestToken")
+                        val json = JSONObject(response.body!!.string())
+                        val guestToken = json.getString("guestToken")
+                        val m = json.optString("mime", "")
+                        val s = json.optLong("size", 0L)
                         ui.post { if (!destroyed && connecting && generation == attempt) {
-                            token = guestToken; inviteInput.text.clear(); connect()
+                            token = guestToken
+                            if (m.isNotEmpty()) remoteMime = m
+                            if (s > 0L) remoteSize = s
+                            inviteInput.text.clear()
+                            connect()
                         } }
                     }
                 } catch (e: Exception) { ui.post { if (generation == attempt) { connecting = false; note(e.message ?: "Join failed") } } }
@@ -2171,30 +2220,32 @@ class MainActivity : Activity() {
     }
     private fun setupPlayer() {
         if (player != null) {
-            val ready = player?.playbackState != Player.STATE_IDLE
+            val ready = player?.playbackState == Player.STATE_READY
             send(JSONObject().put("type", "ready").put("ready", ready))
             return
         }
         val httpFactory = OkHttpDataSource.Factory(client).setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
         val factory = DefaultDataSource.Factory(this, httpFactory)
+        val extractorsFactory = DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
+        val mediaSourceFactory = DefaultMediaSourceFactory(factory, extractorsFactory)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 2_500,
-                /* maxBufferMs = */ 10_000,
-                /* bufferForPlaybackMs = */ 400,
-                /* bufferForPlaybackAfterRebufferMs = */ 800
+                /* minBufferMs = */ 3_000,
+                /* maxBufferMs = */ 15_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_000
             )
             .setBackBuffer(5_000, true)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val p = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(factory))
+            .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .build()
         player = p; video.player = p
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                val ready = playbackState != Player.STATE_IDLE
+                val ready = playbackState == Player.STATE_READY
                 if (ready != lastReady) {
                     lastReady = ready
                     send(JSONObject().put("type", "ready").put("ready", ready))
@@ -2202,12 +2253,17 @@ class MainActivity : Activity() {
                 when (playbackState) {
                     Player.STATE_BUFFERING -> {
                         val pct = p.bufferedPercentage
-                        note(if (pct > 0) "Buffering $pct%…" else "Buffering…")
+                        note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
                     }
                     Player.STATE_READY -> {
+                        if (pendingInitialSeek > 1500L) {
+                            val target = pendingInitialSeek
+                            pendingInitialSeek = 0L
+                            p.seekTo(target)
+                        }
                         val isPlaying = player?.playWhenReady == true
                         updatePlayPauseButtons(isPlaying)
-                        note(if (isPlaying) "▶ Playing" else "⏸ Paused")
+                        note(if (isPlaying) "▶ Playing in sync" else "⏸ Paused (Both in sync)")
                         if (isPlaying) resetControlsTimer() else setControlsVisible(true)
                     }
                     Player.STATE_ENDED -> control(p.currentPosition, false)
@@ -2217,16 +2273,32 @@ class MainActivity : Activity() {
             override fun onIsLoadingChanged(isLoading: Boolean) {
                 if (p.playbackState == Player.STATE_BUFFERING) {
                     val pct = p.bufferedPercentage
-                    note(if (pct > 0) "Buffering $pct%…" else "Buffering…")
+                    note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
                 send(JSONObject().put("type", "ready").put("ready", false))
-                note("Video error: ${error.errorCodeName}. Try an MP4 (H.264/AAC) movie and rejoin.")
+                note("Video error: ${error.errorCodeName}. Details: ${error.message}")
             }
         })
-        p.setMediaItem(MediaItem.fromUri(if (host) movie!! else Uri.parse("$base/rooms/$code/movie")))
-        p.prepare(); latest?.let { applyState(it) }
+        val ext = when {
+            remoteMime.contains("matroska", ignoreCase = true) || remoteMime.endsWith("mkv", ignoreCase = true) -> ".mkv"
+            remoteMime.contains("mp4", ignoreCase = true) -> ".mp4"
+            remoteMime.contains("webm", ignoreCase = true) -> ".webm"
+            else -> ""
+        }
+        val mediaUri = if (host) movie!! else Uri.parse("$base/rooms/$code/movie$ext?token=$token")
+        val mediaItem = MediaItem.Builder()
+            .setUri(mediaUri)
+            .apply {
+                if (!host && remoteMime.isNotEmpty()) {
+                    setMimeType(remoteMime)
+                }
+            }
+            .build()
+        p.setMediaItem(mediaItem)
+        p.prepare()
+        latest?.let { applyState(it) }
         ui.removeCallbacks(progressUpdater)
         ui.post(progressUpdater)
     }
@@ -2256,6 +2328,11 @@ class MainActivity : Activity() {
         val guestConnected = data.optBoolean("guestConnected", false)
         val guestReady = data.optBoolean("guestReady", false)
 
+        val m = data.optString("mime")
+        if (m.isNotEmpty()) remoteMime = m
+        val s = data.optLong("size", 0L)
+        if (s > 0L) remoteSize = s
+
         p.playWhenReady = playing
         updatePlayPauseButtons(playing)
 
@@ -2273,6 +2350,9 @@ class MainActivity : Activity() {
             val hostConnected = data.optBoolean("hostConnected", true)
             if (!hostConnected) {
                 note("⏳ Host temporarily reconnecting… playback paused")
+            } else if (p.playbackState == Player.STATE_BUFFERING) {
+                val pct = p.bufferedPercentage
+                note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
             } else if (playing) {
                 note("▶ Watching together in sync")
             } else {
@@ -2282,20 +2362,28 @@ class MainActivity : Activity() {
 
         if (playing) {
             resetControlsTimer()
-            val drift = position - p.currentPosition
-            when {
-                abs(drift) > 3500 -> {
-                    p.seekTo(position)
-                    p.playbackParameters = PlaybackParameters(1.0f)
+            if (p.playbackState == Player.STATE_READY) {
+                val drift = position - p.currentPosition
+                when {
+                    abs(drift) > 3500 -> {
+                        p.seekTo(position)
+                        p.playbackParameters = PlaybackParameters(1.0f)
+                    }
+                    drift > 200 -> p.playbackParameters = PlaybackParameters(1.04f)
+                    drift < -200 -> p.playbackParameters = PlaybackParameters(0.96f)
+                    else -> p.playbackParameters = PlaybackParameters(1.0f)
                 }
-                drift > 200 -> p.playbackParameters = PlaybackParameters(1.04f)
-                drift < -200 -> p.playbackParameters = PlaybackParameters(0.96f)
-                else -> p.playbackParameters = PlaybackParameters(1.0f)
+            } else {
+                pendingInitialSeek = position
             }
         } else {
             setControlsVisible(true)
             p.playbackParameters = PlaybackParameters(1.0f)
-            if (abs(p.currentPosition - position) > 3000) p.seekTo(position)
+            if (p.playbackState == Player.STATE_READY && abs(p.currentPosition - position) > 3000) {
+                p.seekTo(position)
+            } else if (p.playbackState != Player.STATE_READY) {
+                pendingInitialSeek = position
+            }
         }
     }
     private fun control(position: Long, playing: Boolean) {
@@ -2324,9 +2412,15 @@ class MainActivity : Activity() {
         if (socket !== ws) return
         val id = request.optString("id")
         try {
-            val offset = request.getLong("offset"); val length = request.getInt("length")
-            require(offset >= 0 && length in 1..262144 && offset <= sourceSize-length)
+            val offset = request.getLong("offset")
+            val length = request.getInt("length")
+            require(offset >= 0 && length in 1..262144)
             val channel = getOrOpenMovieChannel(source)
+            val chSize = try { channel.size() } catch (_: Exception) { sourceSize }
+            if (chSize > 0 && offset >= chSize) {
+                ws.send(JSONObject().put("type", "chunk").put("id", id).put("error", true).toString())
+                return
+            }
             val idBytes = id.toByteArray(Charsets.US_ASCII)
             val payload = ByteArray(idBytes.size + length)
             System.arraycopy(idBytes, 0, payload, 0, idBytes.size)
@@ -2334,10 +2428,13 @@ class MainActivity : Activity() {
             var read = 0
             while (read < length) {
                 val n = channel.read(buffer, offset + read)
-                check(n > 0)
+                if (n <= 0) break
                 read += n
             }
-            ws.send(payload.toByteString(0, payload.size))
+            val sent = ws.send(payload.toByteString(0, payload.size))
+            if (!sent) {
+                ws.send(JSONObject().put("type", "chunk").put("id", id).put("error", true).toString())
+            }
         } catch (_: Exception) {
             ws.send(JSONObject().put("type", "chunk").put("id", id).put("error", true).toString())
         }
