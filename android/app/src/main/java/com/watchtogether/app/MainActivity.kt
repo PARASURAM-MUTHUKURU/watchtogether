@@ -1264,11 +1264,18 @@ class MainActivity : Activity() {
         if (isInPictureInPictureMode) {
             sessionHeader.visibility = View.GONE
             controlsGroup.visibility = View.GONE
-            if (::chatController.isInitialized) chatController.chatSheet.visibility = View.GONE
+            if (::floatingMicBtn.isInitialized) floatingMicBtn.visibility = View.GONE
+            if (::chatController.isInitialized) {
+                chatController.chatSheet.visibility = View.GONE
+                chatController.floatingChatBtn.visibility = View.GONE
+                chatController.floatingChatToast.visibility = View.GONE
+            }
         } else {
             if (relayClient.connected) {
                 sessionHeader.visibility = View.VISIBLE
                 controlsGroup.visibility = View.VISIBLE
+                if (::floatingMicBtn.isInitialized) floatingMicBtn.visibility = View.VISIBLE
+                if (::chatController.isInitialized) chatController.floatingChatBtn.visibility = View.VISIBLE
             }
         }
     }

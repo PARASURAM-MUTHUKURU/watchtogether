@@ -46,7 +46,11 @@ class MovieStreamChannel(private val context: Context) {
                 if (n <= 0) break
                 read += n
             }
-            val sent = ws.send(payload.toByteString(0, payload.size))
+            if (read <= 0) {
+                ws.send(JSONObject().put("type", "chunk").put("id", id).put("error", true).toString())
+                return
+            }
+            val sent = ws.send(payload.toByteString(0, idBytes.size + read))
             if (!sent) {
                 ws.send(JSONObject().put("type", "chunk").put("id", id).put("error", true).toString())
             }

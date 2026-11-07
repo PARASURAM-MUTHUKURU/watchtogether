@@ -382,7 +382,7 @@ async def fetch_block(room, offset, length):
             raise IOError('Host offline')
         await room.host.send_json(dict(type='read', id=ident, offset=offset, length=length))
         block = await asyncio.wait_for(future, 30)
-        if len(block) != length:
+        if len(block) == 0:
             raise IOError('Short movie read')
         return block
     finally:

@@ -246,7 +246,10 @@ class SyncPlayerManager(
         val mediaUri = if (guestMovie != null) {
             guestMovie
         } else if (isHost) {
-            movie!!
+            movie ?: run {
+                onNote("⚠️ Local movie not loaded. Please select a movie file.")
+                return
+            }
         } else {
             Uri.parse("$base/rooms/$code/movie$ext?token=$token")
         }
