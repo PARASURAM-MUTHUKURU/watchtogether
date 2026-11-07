@@ -33,6 +33,7 @@ class Room:
     playing: bool = False
     desired: bool = False
     ready: dict = field(default_factory=lambda: dict(host=False, guest=False))
+    buffer_pct: dict = field(default_factory=lambda: dict(host=100, guest=0))
     updated: float = field(default_factory=time.monotonic)
     created: float = field(default_factory=time.monotonic)
     host_disconnected: float = 0.0
@@ -49,7 +50,9 @@ class Room:
             size=self.size,
             hostConnected=self.host is not None and not self.host.closed,
             guestConnected=self.guest is not None and not self.guest.closed,
-            guestReady=bool(self.ready.get('guest', False))
+            guestReady=bool(self.ready.get('guest', False)),
+            guestBufferPct=int(self.buffer_pct.get('guest', 0)),
+            hostBufferPct=int(self.buffer_pct.get('host', 100))
         )
 
 async def broadcast(room):
@@ -272,7 +275,12 @@ async def socket(request):
                     if kind == 'ready':
                         if type(data.get('ready')) is not bool:
                             raise ValueError()
-                        room.ready[role] = data['ready']
+                        is_ready = data['ready']
+                        room.ready[role] = is_ready
+                        if is_ready:
+                            room.buffer_pct[role] = 100
+                        elif 'buffer' in data and type(data['buffer']) is int:
+                            room.buffer_pct[role] = max(0, min(100, data['buffer']))
                     else:
                         pos = data['position']
                         if type(pos) is not int or not 0 <= pos <= 2**53-1:

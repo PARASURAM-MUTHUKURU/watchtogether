@@ -187,23 +187,47 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateLoadingHud(isBuffering: Boolean, text: String = "") {
+        ui.post {
+            if (destroyed || !::videoLoadingOverlay.isInitialized) return@post
+            if (isBuffering) {
+                videoLoadingOverlay.visibility = View.VISIBLE
+                if (text.isNotEmpty()) videoLoadingText.text = text
+            } else {
+                videoLoadingOverlay.visibility = View.GONE
+            }
+        }
+    }
+
     private val progressUpdater = object : Runnable {
         override fun run() {
             if (!destroyed && connected && player != null) {
                 val p = player
-                if (p != null && !isUserSeeking) {
-                    val duration = p.duration.coerceAtLeast(0L)
-                    val current = p.currentPosition.coerceAtLeast(0L)
-                    val buffered = p.bufferedPosition.coerceAtLeast(0L)
-                    if (duration > 0) {
-                        seekBar.max = duration.toInt()
-                        seekBar.progress = current.toInt()
-                        seekBar.secondaryProgress = buffered.toInt()
-                        timeCurrent.text = formatTime(current)
-                        timeTotal.text = formatTime(duration)
-                    } else {
-                        timeCurrent.text = formatTime(current)
-                        timeTotal.text = "--:--"
+                if (p != null) {
+                    val isBuffering = p.playbackState == Player.STATE_BUFFERING
+                    val pct = p.bufferedPercentage
+                    if (isBuffering) {
+                        if (pct != lastSentBufferPct) {
+                            lastSentBufferPct = pct
+                            send(JSONObject().put("type", "ready").put("ready", false).put("buffer", pct))
+                        }
+                        val bufMsg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
+                        updateLoadingHud(true, bufMsg)
+                    }
+                    if (!isUserSeeking) {
+                        val duration = p.duration.coerceAtLeast(0L)
+                        val current = p.currentPosition.coerceAtLeast(0L)
+                        val buffered = p.bufferedPosition.coerceAtLeast(0L)
+                        if (duration > 0) {
+                            seekBar.max = duration.toInt()
+                            seekBar.progress = current.toInt()
+                            seekBar.secondaryProgress = buffered.toInt()
+                            timeCurrent.text = formatTime(current)
+                            timeTotal.text = formatTime(duration)
+                        } else {
+                            timeCurrent.text = formatTime(current)
+                            timeTotal.text = "--:--"
+                        }
                     }
                 }
             }
@@ -221,6 +245,10 @@ class MainActivity : Activity() {
     private var guestMovie: Uri? = null
     private lateinit var guestMovieLabel: TextView
     private lateinit var clearGuestMovieBtn: Button
+    private var lastSentBufferPct = -1
+    private lateinit var videoLoadingOverlay: LinearLayout
+    private lateinit var videoLoadingProgress: ProgressBar
+    private lateinit var videoLoadingText: TextView
     private var reconnectAttempts = 0
     private var autoCreateAfterPick = false
     private val reconnectTask = Runnable {
@@ -813,6 +841,37 @@ class MainActivity : Activity() {
         }
         hudContainer.addView(hudText)
         playerContainer.addView(hudContainer)
+
+        // 4b. Video Loading & Buffering HUD with Percentage
+        videoLoadingOverlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding((22 * density).toInt(), (16 * density).toInt(), (22 * density).toInt(), (16 * density).toInt())
+            background = roundedBackground(Color.parseColor("#EE0F172A"), 16f, Color.parseColor("#334155"), 1)
+            visibility = View.GONE
+            isClickable = false
+            isFocusable = false
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER
+            }
+        }
+        videoLoadingProgress = ProgressBar(this).apply {
+            indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#34D399"))
+            layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = (10 * density).toInt()
+            }
+        }
+        videoLoadingText = TextView(this).apply {
+            text = "⏳ Loading movie…"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        videoLoadingOverlay.addView(videoLoadingProgress)
+        videoLoadingOverlay.addView(videoLoadingText)
+        playerContainer.addView(videoLoadingOverlay)
 
         // 5. Floating Quick Walkie-Talkie Button (Positioned at bottom-right for natural thumb reach)
         floatingMicBtn = TextView(this).apply {
@@ -2312,14 +2371,19 @@ class MainActivity : Activity() {
                 val ready = playbackState == Player.STATE_READY
                 if (ready != lastReady) {
                     lastReady = ready
-                    send(JSONObject().put("type", "ready").put("ready", ready))
+                    val pct = if (ready) 100 else p.bufferedPercentage
+                    lastSentBufferPct = pct
+                    send(JSONObject().put("type", "ready").put("ready", ready).put("buffer", pct))
                 }
                 when (playbackState) {
                     Player.STATE_BUFFERING -> {
                         val pct = p.bufferedPercentage
-                        note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
+                        val msg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
+                        updateLoadingHud(true, msg)
+                        note(msg)
                     }
                     Player.STATE_READY -> {
+                        updateLoadingHud(false)
                         if (pendingInitialSeek > 1500L) {
                             val target = pendingInitialSeek
                             pendingInitialSeek = 0L
@@ -2331,17 +2395,27 @@ class MainActivity : Activity() {
                         if (isPlaying) resetControlsTimer() else setControlsVisible(true)
                     }
                     Player.STATE_ENDED -> control(p.currentPosition, false)
-                    Player.STATE_IDLE -> note("Player idle")
+                    Player.STATE_IDLE -> {
+                        updateLoadingHud(false)
+                        note("Player idle")
+                    }
                 }
             }
             override fun onIsLoadingChanged(isLoading: Boolean) {
                 if (p.playbackState == Player.STATE_BUFFERING) {
                     val pct = p.bufferedPercentage
-                    note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
+                    if (pct != lastSentBufferPct) {
+                        lastSentBufferPct = pct
+                        send(JSONObject().put("type", "ready").put("ready", false).put("buffer", pct))
+                    }
+                    val msg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
+                    updateLoadingHud(true, msg)
+                    note(msg)
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
-                send(JSONObject().put("type", "ready").put("ready", false))
+                updateLoadingHud(false)
+                send(JSONObject().put("type", "ready").put("ready", false).put("buffer", 0))
                 note("Video error: ${error.errorCodeName}. Details: ${error.message}")
             }
         })
@@ -2397,6 +2471,7 @@ class MainActivity : Activity() {
         val playing = data.getBoolean("playing")
         val guestConnected = data.optBoolean("guestConnected", false)
         val guestReady = data.optBoolean("guestReady", false)
+        val guestBufferPct = data.optInt("guestBufferPct", 0)
 
         val m = data.optString("mime")
         if (m.isNotEmpty()) remoteMime = m
@@ -2408,25 +2483,42 @@ class MainActivity : Activity() {
 
         if (host) {
             if (!guestConnected) {
+                updateLoadingHud(false)
                 note("⏳ Solo mode · Waiting for friend to join (${code})…")
             } else if (!guestReady) {
-                note("⏳ Friend joined! Buffering movie…")
-            } else if (playing) {
-                note("▶ Watching together in sync")
+                val fMsg = if (guestBufferPct > 0) "⏳ Friend is buffering ($guestBufferPct%)…" else "⏳ Friend joined! Buffering movie…"
+                updateLoadingHud(true, fMsg)
+                note(fMsg)
             } else {
-                note("⏸ Paused (Both in sync)")
+                updateLoadingHud(p.playbackState == Player.STATE_BUFFERING, "⏳ Buffering movie…")
+                if (playing) {
+                    note("▶ Watching together in sync")
+                } else {
+                    note("⏸ Paused (Both in sync)")
+                }
             }
         } else {
             val hostConnected = data.optBoolean("hostConnected", true)
             if (!hostConnected) {
+                updateLoadingHud(true, "⏳ Host temporarily reconnecting…")
                 note("⏳ Host temporarily reconnecting… playback paused")
             } else if (p.playbackState == Player.STATE_BUFFERING) {
                 val pct = p.bufferedPercentage
-                note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
-            } else if (playing) {
-                note(if (guestMovie != null) "▶ Watching in sync (Local 0 MB Data Mode)" else "▶ Watching together in sync")
+                val gMsg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
+                updateLoadingHud(true, gMsg)
+                note(gMsg)
+            } else if (!guestReady) {
+                val pct = p.bufferedPercentage
+                val gMsg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Preparing movie…"
+                updateLoadingHud(true, gMsg)
+                note(gMsg)
             } else {
-                note("⏸ Paused by host/friend")
+                updateLoadingHud(false)
+                if (playing) {
+                    note(if (guestMovie != null) "▶ Watching in sync (Local 0 MB Data Mode)" else "▶ Watching together in sync")
+                } else {
+                    note("⏸ Paused by host/friend")
+                }
             }
         }
 
@@ -2862,6 +2954,8 @@ class MainActivity : Activity() {
         closeMovieChannel()
         val old = socket; socket = null; old?.close(1000, "Left room")
         token = ""; code = ""; inviteInput.text.clear()
+        lastSentBufferPct = -1
+        updateLoadingHud(false)
         player?.release(); player = null; video.player = null
         connected = false; connecting = false; invite = ""; latest = null
         if (::emojiContainer.isInitialized) emojiContainer.removeAllViews()
