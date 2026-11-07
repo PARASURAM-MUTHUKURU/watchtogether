@@ -189,7 +189,17 @@ async def lifecycle(app):
 
 async def socket(request):
     room, role = resolve(request)
-    if role in room.reserved:
+    is_reconnect = request.query.get('reconnect') == '1'
+    if is_reconnect:
+        old_ws = getattr(room, role)
+        if old_ws is not None and not old_ws.closed:
+            try:
+                await old_ws.close(code=1000, message=b'Replaced by reconnect')
+            except Exception:
+                pass
+            setattr(room, role, None)
+        room.reserved.discard(role)
+    elif role in room.reserved:
         raise web.HTTPConflict(text='This room role is already connected')
     # Reserve before the handshake await; two simultaneous sockets cannot take a role.
     room.reserved.add(role)

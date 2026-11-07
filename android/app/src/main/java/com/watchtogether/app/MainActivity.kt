@@ -218,12 +218,15 @@ class MainActivity : Activity() {
     @Volatile private var moviePfd: ParcelFileDescriptor? = null
     private var size = 0L
     private var mime = "video/mp4"
+    private var guestMovie: Uri? = null
+    private lateinit var guestMovieLabel: TextView
+    private lateinit var clearGuestMovieBtn: Button
     private var reconnectAttempts = 0
     private var autoCreateAfterPick = false
     private val reconnectTask = Runnable {
         if (!destroyed && !connected && token.isNotEmpty()) {
-            note("Reconnecting (attempt $reconnectAttempts/5)…")
-            connect()
+            note("Reconnecting (attempt $reconnectAttempts/15)…")
+            connect(isReconnect = true)
         }
     }
     private var player: ExoPlayer? = null
@@ -552,6 +555,34 @@ class MainActivity : Activity() {
         }
         joinStep2.addView(joinBtn)
         joinContainer.addView(joinStep2)
+
+        // Data Saver Option (Optional for Guests)
+        val dataSaverCard = stepCard("💾", "Data Saver Option (Optional)", "Have this movie on your phone? Play locally to use 0 MB video data!")
+        val pickGuestMovieBtn = styledButton("📁 Pick Local Movie Copy (0 MB Data)", Color.parseColor("#059669")) {
+            pickGuestLocalMovie()
+        }
+        guestMovieLabel = TextView(this).apply {
+            text = "Default: Streams movie from friend over internet.\nTip: If you already have this movie or received it via Quick Share / WhatsApp / Xender, select it here to watch together with 0 MB internet video data!"
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 11f
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (6 * density).toInt()
+                bottomMargin = (4 * density).toInt()
+            }
+        }
+        clearGuestMovieBtn = styledButton("✕ Switch Back to Cloud Stream", Color.parseColor("#475569")) {
+            guestMovie = null
+            guestMovieLabel.text = "Default: Streams movie from friend over internet.\nTip: If you already have this movie or received it via Quick Share / WhatsApp / Xender, select it here to watch together with 0 MB internet video data!"
+            guestMovieLabel.setTextColor(Color.parseColor("#94A3B8"))
+            clearGuestMovieBtn.visibility = View.GONE
+            note("Switched back to Cloud Streaming")
+        }.apply {
+            visibility = View.GONE
+        }
+        dataSaverCard.addView(pickGuestMovieBtn)
+        dataSaverCard.addView(guestMovieLabel)
+        dataSaverCard.addView(clearGuestMovieBtn)
+        joinContainer.addView(dataSaverCard)
 
         // Join Step 3: Watch
         val joinStep3 = stepCard("3", "Watch in Sync", "Video streams directly from your friend in real-time")
@@ -1954,9 +1985,10 @@ class MainActivity : Activity() {
         val fallbackServer = if (prefServer.contains("trycloudflare.com")) DEFAULT_SERVER else prefServer
         val raw = if (input.isNotEmpty() && !input.contains("trycloudflare.com")) input else fallbackServer
         val url = raw.toHttpUrlOrNull()
-        require(url != null && url.isHttps && url.username.isEmpty() && url.password.isEmpty() &&
+        val isLocal = url != null && (url.host == "localhost" || url.host == "127.0.0.1" || url.host.startsWith("192.168.") || url.host.startsWith("10."))
+        require(url != null && (url.isHttps || isLocal) && url.username.isEmpty() && url.password.isEmpty() &&
             url.encodedPath == "/" && url.query == null && url.fragment == null) {
-            "Enter only the trusted HTTPS server origin, without a path or credentials"
+            "Enter only a valid HTTPS server or local network origin, without a path or credentials"
         }
         val value = url.toString().trimEnd('/')
         getPreferences(0).edit().putString("server", value).apply()
@@ -1972,6 +2004,12 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun pickGuestLocalMovie() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "video/*"; addCategory(Intent.CATEGORY_OPENABLE); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }, 11)
+    }
+
     private fun processCreateRoom() {
         if (connected || connecting) return
         if (movie == null) {
@@ -1985,7 +2023,30 @@ class MainActivity : Activity() {
     @Deprecated("Android activity result API retained to avoid an extra UI framework dependency")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 10 || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
+        if (requestCode == 11) {
+            try {
+                val uri = data?.data ?: return
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Exception) {}
+                var name = "Local Movie"
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) name = c.getString(0)
+                }
+                guestMovie = uri
+                if (::guestMovieLabel.isInitialized) {
+                    guestMovieLabel.text = "✓ Using local file: $name\n(0 MB Video Data · Instant Playback!)"
+                    guestMovieLabel.setTextColor(Color.parseColor("#34D399"))
+                }
+                if (::clearGuestMovieBtn.isInitialized) {
+                    clearGuestMovieBtn.visibility = View.VISIBLE
+                }
+                note("Local movie selected! 0 MB internet video data will be used.")
+            } catch (e: Exception) { note(e.message ?: "Cannot open local movie") }
+            return
+        }
+        if (requestCode != 10) return
         try {
             val uri = data?.data ?: return
             try {
@@ -2120,9 +2181,10 @@ class MainActivity : Activity() {
             note("Connecting to friend's movie…")
         } catch (e: Exception) { connecting = false; note(e.message ?: "Invalid invite") }
     }
-    private fun connect() {
+    private fun connect(isReconnect: Boolean = false) {
         latest = null; lastReady = null
-        val request = Request.Builder().url(base.replaceFirst("https://", "wss://") + "/rooms/$code/ws").header("Authorization", "Bearer $token").build()
+        val reconnectParam = if (isReconnect || reconnectAttempts > 0) "?reconnect=1" else ""
+        val request = Request.Builder().url(base.replaceFirst("https://", "wss://") + "/rooms/$code/ws$reconnectParam").header("Authorization", "Bearer $token").build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 ui.post {
@@ -2215,8 +2277,8 @@ class MainActivity : Activity() {
             return
         }
         reconnectAttempts++
-        val delay = (1200L * reconnectAttempts).coerceIn(1500L, 4000L)
-        note("Reconnecting in ${delay / 1000}s…")
+        val delay = (1000L * reconnectAttempts).coerceIn(1200L, 3500L)
+        note("Connection interrupted · Reconnecting in ${delay / 1000}s (attempt $reconnectAttempts/15)…")
         ui.removeCallbacks(reconnectTask)
         ui.postDelayed(reconnectTask, delay)
     }
@@ -2289,11 +2351,17 @@ class MainActivity : Activity() {
             remoteMime.contains("webm", ignoreCase = true) -> ".webm"
             else -> ""
         }
-        val mediaUri = if (host) movie!! else Uri.parse("$base/rooms/$code/movie$ext?token=$token")
+        val mediaUri = if (guestMovie != null) {
+            guestMovie!!
+        } else if (host) {
+            movie!!
+        } else {
+            Uri.parse("$base/rooms/$code/movie$ext?token=$token")
+        }
         val mediaItem = MediaItem.Builder()
             .setUri(mediaUri)
             .apply {
-                if (!host && remoteMime.isNotEmpty()) {
+                if (!host && guestMovie == null && remoteMime.isNotEmpty()) {
                     setMimeType(remoteMime)
                 }
             }
@@ -2356,7 +2424,7 @@ class MainActivity : Activity() {
                 val pct = p.bufferedPercentage
                 note(if (pct > 0) "⏳ Buffering $pct%…" else "⏳ Buffering movie…")
             } else if (playing) {
-                note("▶ Watching together in sync")
+                note(if (guestMovie != null) "▶ Watching in sync (Local 0 MB Data Mode)" else "▶ Watching together in sync")
             } else {
                 note("⏸ Paused by host/friend")
             }

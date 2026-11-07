@@ -235,6 +235,15 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(errors[0].status,409)
         await sockets[0].close()
 
+    async def test_reconnect_replaces_stale_connection_without_409(self):
+        room, _ = await self.room()
+        endpoint = self.base + f"/rooms/{room['code']}/ws"
+        ws1 = await self.client.ws_connect(endpoint, headers=self.guest_headers)
+        ws2 = await self.client.ws_connect(endpoint + "?reconnect=1", headers=self.guest_headers)
+        self.assertFalse(ws2.closed)
+        await ws1.close()
+        await ws2.close()
+
     async def test_guest_cannot_impersonate_host_and_bad_messages_close(self):
         room, _ = await self.room()
         endpoint=self.base+f"/rooms/{room['code']}/ws"
