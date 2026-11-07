@@ -1,9 +1,11 @@
 package com.watchtogether.app
 
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -13,6 +15,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.text.InputType
+import android.util.Rational
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -79,6 +82,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var guestMovieLabel: TextView
     private lateinit var clearGuestMovieBtn: Button
+    private lateinit var clipboardAutoJoinCard: LinearLayout
 
     // Video Player & Controls Views
     private lateinit var playerContainer: FrameLayout
@@ -201,6 +205,15 @@ class MainActivity : Activity() {
                 marginEnd = (4 * density).toInt()
             }
         }
+        val pipBtn = UIUtils.styledButton(this, density, "⤢ PiP", Color.parseColor("#334155")) {
+            enterPipMode()
+        }.apply {
+            textSize = 11f
+            setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = (4 * density).toInt()
+            }
+        }
         val leaveBtn = UIUtils.styledButton(this, density, "✕ Leave", Color.parseColor("#DC2626")) { leave() }.apply {
             textSize = 11f
             setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
@@ -209,6 +222,7 @@ class MainActivity : Activity() {
         topBtnRow.addView(roomCodeBadge)
         topBtnRow.addView(friendsHeaderBtn)
         topBtnRow.addView(shareHeaderBtn)
+        topBtnRow.addView(pipBtn)
         topBtnRow.addView(leaveBtn)
         sessionHeader.addView(topBtnRow)
 
@@ -329,45 +343,69 @@ class MainActivity : Activity() {
 
         // Host Container
         hostContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val quickCard = LinearLayout(this).apply {
+
+        // Modern Movie Hero Card
+        val movieHeroCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 14f, Color.parseColor("#10B981"), 2)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 16f, Color.parseColor("#3B82F6"), 1)
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 setMargins(0, (4 * density).toInt(), 0, (10 * density).toInt())
             }
         }
-        val quickTitle = TextView(this).apply {
-            text = "⚡ Instant Room Setup"
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
+        val movieHeaderRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-        val quickDesc = TextView(this).apply {
-            text = "Tap below to choose your movie and instantly launch your watch party."
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 12f
-            setPadding(0, (2 * density).toInt(), 0, (10 * density).toInt())
+        val movieIconBadge = TextView(this).apply {
+            text = "🎬"
+            textSize = 24f
+            setPadding(0, 0, (10 * density).toInt(), 0)
         }
         fileLabel = TextView(this).apply {
-            text = "📁 No movie selected yet (will prompt on tap)"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 13f
-            setPadding(0, 0, 0, (12 * density).toInt())
+            text = "No movie selected\nTap 'Select Video' to begin"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val processCreateBtn = UIUtils.styledButton(this, density, "🚀 Process & Create Room", Color.parseColor("#10B981")) {
+        val pickMovieBtn = UIUtils.styledButton(this, density, "📁 Select Video", Color.parseColor("#2563EB")) {
+            if (!relayClient.connected && !relayClient.connecting) pickMovie(autoCreate = false)
+        }.apply {
+            textSize = 12f
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
+        }
+        movieHeaderRow.addView(movieIconBadge)
+        movieHeaderRow.addView(fileLabel)
+        movieHeaderRow.addView(pickMovieBtn)
+        movieHeroCard.addView(movieHeaderRow)
+
+        val launchPartyBtn = UIUtils.gradientButton(
+            this,
+            density,
+            "🚀  Launch Watch Party",
+            Color.parseColor("#4F46E5"),
+            Color.parseColor("#7C3AED")
+        ) {
             processCreateRoom()
         }.apply {
-            textSize = 15f
-            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (14 * density).toInt()
+            }
         }
-        quickCard.addView(quickTitle)
-        quickCard.addView(quickDesc)
-        quickCard.addView(fileLabel)
-        quickCard.addView(processCreateBtn)
-        hostContainer.addView(quickCard)
+        movieHeroCard.addView(launchPartyBtn)
+        hostContainer.addView(movieHeroCard)
 
-        val settingsCard = UIUtils.stepCard(this, density, "⚙", "Relay & Security (Configured ✓)", "Server origin and host access credentials")
+        // Collapsible Advanced Server Settings
+        val advancedContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding((12 * density).toInt(), (10 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#0F172A"), 12f, Color.parseColor("#223048"), 1)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (4 * density).toInt()
+            }
+        }
         val prefServer = getPreferences(0).getString("server", DEFAULT_SERVER)?.takeIf { it.isNotBlank() } ?: DEFAULT_SERVER
         val savedServer = if (prefServer.contains("trycloudflare.com")) DEFAULT_SERVER else prefServer
         server = EditText(this).apply {
@@ -377,7 +415,7 @@ class MainActivity : Activity() {
             inputType = 17
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#64748B"))
-            background = UIUtils.roundedBackground(density, Color.parseColor("#0F172A"), 8f, Color.parseColor("#334155"), 1)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#080B11"), 8f, Color.parseColor("#334155"), 1)
             setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
         }
         val savedKey = getPreferences(0).getString("creator_key", DEFAULT_CREATOR_KEY)?.takeIf { it.isNotBlank() } ?: DEFAULT_CREATOR_KEY
@@ -388,18 +426,32 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#64748B"))
-            background = UIUtils.roundedBackground(density, Color.parseColor("#0F172A"), 8f, Color.parseColor("#334155"), 1)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#080B11"), 8f, Color.parseColor("#334155"), 1)
             setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
         }
-        val pickMovieBtn = UIUtils.styledButton(this, density, "📁 Browse / Change Movie", Color.parseColor("#2563EB")) {
-            if (!relayClient.connected && !relayClient.connecting) pickMovie(autoCreate = false)
+        advancedContent.addView(server)
+        advancedContent.addView(UIUtils.spacer(this, density, 8))
+        advancedContent.addView(creatorKey)
+
+        val advancedToggleBtn = TextView(this).apply {
+            text = "⚙️ Advanced Relay Settings  ▾"
+            setTextColor(Color.parseColor("#64748B"))
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
+            setOnClickListener {
+                if (advancedContent.visibility == View.VISIBLE) {
+                    advancedContent.visibility = View.GONE
+                    text = "⚙️ Advanced Relay Settings  ▾"
+                } else {
+                    advancedContent.visibility = View.VISIBLE
+                    text = "⚙️ Advanced Relay Settings  ▴"
+                }
+            }
         }
-        settingsCard.addView(server)
-        settingsCard.addView(UIUtils.spacer(this, density, 8))
-        settingsCard.addView(creatorKey)
-        settingsCard.addView(UIUtils.spacer(this, density, 8))
-        settingsCard.addView(pickMovieBtn)
-        hostContainer.addView(settingsCard)
+        hostContainer.addView(advancedToggleBtn)
+        hostContainer.addView(advancedContent)
         setupContent.addView(hostContainer)
 
         // Join Container
@@ -407,7 +459,46 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
-        val joinStep1 = UIUtils.stepCard(this, density, "1", "Friend's Invite", "Enter or paste the invite link your friend sent")
+
+        // Smart Clipboard Auto-Detect Card
+        clipboardAutoJoinCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 14f, Color.parseColor("#10B981"), 2)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                setMargins(0, (2 * density).toInt(), 0, (8 * density).toInt())
+            }
+        }
+        val clipAutoTitle = TextView(this).apply {
+            text = "✨ Watch Party Invite Found on Clipboard!"
+            setTextColor(Color.parseColor("#34D399"))
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val clipAutoBtn = UIUtils.gradientButton(
+            this,
+            density,
+            "🍿 Tap to Join Friend Now",
+            Color.parseColor("#059669"),
+            Color.parseColor("#10B981")
+        ) {
+            val clip = (getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+            if (clip.contains("|")) {
+                inviteInput.setText(clip)
+                doJoin(clip)
+            }
+        }.apply {
+            textSize = 13f
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = (8 * density).toInt()
+            }
+        }
+        clipboardAutoJoinCard.addView(clipAutoTitle)
+        clipboardAutoJoinCard.addView(clipAutoBtn)
+        joinContainer.addView(clipboardAutoJoinCard)
+
+        val joinStep1 = UIUtils.stepCard(this, density, "1", "Friend's Invite Link", "Enter or paste the invite code from your friend")
         inviteInput = EditText(this).apply {
             hint = "server|room.token"
             setSingleLine(true)
@@ -425,7 +516,7 @@ class MainActivity : Activity() {
                 val clip = (getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
                 if (!clip.isNullOrEmpty()) {
                     inviteInput.setText(clip)
-                    note("Invite pasted! Tap 'Connect & Pair' below.")
+                    note("Invite pasted! Tap 'Connect & Watch' below.")
                 } else note("Clipboard is empty.")
             } catch (_: Exception) { note("Cannot read clipboard") }
         }
@@ -434,10 +525,17 @@ class MainActivity : Activity() {
         joinStep1.addView(pasteBtn)
         joinContainer.addView(joinStep1)
 
-        val joinStep2 = UIUtils.stepCard(this, density, "2", "Connect & Pair", "Redeem invitation and establish real-time connection")
-        val joinBtn = UIUtils.styledButton(this, density, "⚡ Connect & Pair", Color.parseColor("#2563EB")) {
+        val joinStep2 = UIUtils.stepCard(this, density, "2", "Connect & Watch", "")
+        val joinBtn = UIUtils.gradientButton(
+            this,
+            density,
+            "⚡  Connect & Watch Together",
+            Color.parseColor("#2563EB"),
+            Color.parseColor("#1D4ED8")
+        ) {
             if (!relayClient.connected && !relayClient.connecting) joinRoom()
         }
+        joinStep2.addView(joinBtn)
         joinStep2.addView(joinBtn)
         joinContainer.addView(joinStep2)
 
@@ -847,23 +945,41 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun checkClipboardInvite() {
+        try {
+            if (!::clipboardAutoJoinCard.isInitialized) return
+            val clip = (getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+            if (clip.contains("|") && clip.contains(".") && clip.length > 15) {
+                clipboardAutoJoinCard.visibility = View.VISIBLE
+            } else {
+                clipboardAutoJoinCard.visibility = View.GONE
+            }
+        } catch (_: Exception) {}
+    }
+
+    override fun onResume() {
+        super.onResume()
+        checkClipboardInvite()
+    }
+
     private fun selectTab(isHost: Boolean) {
         val density = resources.displayMetrics.density
         if (isHost) {
-            hostTab.background = UIUtils.roundedBackground(density, Color.parseColor("#2563EB"), 10f)
+            hostTab.background = UIUtils.roundedBackground(density, Color.parseColor("#4F46E5"), 10f)
             hostTab.setTextColor(Color.WHITE)
-            joinTab.background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f)
+            joinTab.background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 10f)
             joinTab.setTextColor(Color.parseColor("#94A3B8"))
             hostContainer.visibility = View.VISIBLE
             joinContainer.visibility = View.GONE
             note("Host mode · Step 1: Choose a movie to begin")
         } else {
-            joinTab.background = UIUtils.roundedBackground(density, Color.parseColor("#2563EB"), 10f)
+            joinTab.background = UIUtils.roundedBackground(density, Color.parseColor("#4F46E5"), 10f)
             joinTab.setTextColor(Color.WHITE)
-            hostTab.background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f)
+            hostTab.background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 10f)
             hostTab.setTextColor(Color.parseColor("#94A3B8"))
             hostContainer.visibility = View.GONE
             joinContainer.visibility = View.VISIBLE
+            checkClipboardInvite()
             note("Join mode · Step 1: Paste friend's invite to begin")
         }
     }
@@ -1012,7 +1128,7 @@ class MainActivity : Activity() {
                 else -> null
             }
             mime = detectedMime ?: extMime ?: contentResolver.getType(uri)?.takeIf { it.startsWith("video/") } ?: "video/mp4"
-            fileLabel.text = "✓ $name · ${size / 1024 / 1024} MB"
+            fileLabel.text = "🎬 $name\n${size / 1024 / 1024} MB · Ready to Stream"
             fileLabel.setTextColor(Color.parseColor("#34D399"))
             if (autoCreateAfterPick) {
                 autoCreateAfterPick = false
@@ -1119,6 +1235,40 @@ class MainActivity : Activity() {
                 note("Microphone ready! Hold 🎙️ to talk.")
             } else {
                 note("Microphone permission needed to use Push-to-Talk.")
+            }
+        }
+    }
+
+    private fun enterPipMode() {
+        try {
+            val aspectRatio = Rational(16, 9)
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(aspectRatio)
+                .build()
+            enterPictureInPictureMode(params)
+        } catch (_: Exception) {
+            @Suppress("DEPRECATION")
+            enterPictureInPictureMode()
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (relayClient.connected && playerManager.player != null) {
+            enterPipMode()
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            sessionHeader.visibility = View.GONE
+            controlsGroup.visibility = View.GONE
+            if (::chatController.isInitialized) chatController.chatSheet.visibility = View.GONE
+        } else {
+            if (relayClient.connected) {
+                sessionHeader.visibility = View.VISIBLE
+                controlsGroup.visibility = View.VISIBLE
             }
         }
     }

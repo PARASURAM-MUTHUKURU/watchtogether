@@ -34,6 +34,23 @@ object UIUtils {
         }
     }
 
+    fun gradientBackground(
+        density: Float,
+        startColor: Int,
+        endColor: Int,
+        radiusDp: Float,
+        orientation: GradientDrawable.Orientation = GradientDrawable.Orientation.LEFT_RIGHT,
+        strokeColor: Int = 0,
+        strokeWidthDp: Int = 0
+    ): GradientDrawable {
+        return GradientDrawable(orientation, intArrayOf(startColor, endColor)).apply {
+            cornerRadius = radiusDp * density
+            if (strokeWidthDp > 0 && strokeColor != 0) {
+                setStroke((strokeWidthDp * density).toInt(), strokeColor)
+            }
+        }
+    }
+
     fun styledButton(context: Context, density: Float, label: String, bgColor: Int, textColor: Int = Color.WHITE, action: () -> Unit): Button {
         return Button(context).apply {
             text = label
@@ -41,9 +58,43 @@ object UIUtils {
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             isAllCaps = false
-            background = roundedBackground(density, bgColor, 10f)
+            background = roundedBackground(density, bgColor, 12f)
             setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
             setOnClickListener { action() }
+        }
+    }
+
+    fun gradientButton(
+        context: Context,
+        density: Float,
+        label: String,
+        startColor: Int,
+        endColor: Int,
+        textColor: Int = Color.WHITE,
+        action: () -> Unit
+    ): Button {
+        return Button(context).apply {
+            text = label
+            setTextColor(textColor)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            isAllCaps = false
+            background = gradientBackground(density, startColor, endColor, 14f)
+            elevation = 6f * density
+            setPadding((16 * density).toInt(), (13 * density).toInt(), (16 * density).toInt(), (13 * density).toInt())
+            setOnClickListener { action() }
+        }
+    }
+
+    fun chipBadge(context: Context, density: Float, text: String, bgColor: Int, textColor: Int): TextView {
+        return TextView(context).apply {
+            this.text = text
+            setTextColor(textColor)
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = roundedBackground(density, bgColor, 8f)
+            setPadding((8 * density).toInt(), (3 * density).toInt(), (8 * density).toInt(), (3 * density).toInt())
         }
     }
 
@@ -51,7 +102,7 @@ object UIUtils {
         return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
-            background = roundedBackground(density, Color.parseColor("#1E293B"), 14f, Color.parseColor("#334155"), 1)
+            background = roundedBackground(density, Color.parseColor("#131B2A"), 14f, Color.parseColor("#223048"), 1)
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 setMargins(0, (5 * density).toInt(), 0, (5 * density).toInt())
             }
@@ -62,7 +113,7 @@ object UIUtils {
                 textSize = 12f
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
-                background = roundedBackground(density, Color.parseColor("#3B82F6"), 12f)
+                background = roundedBackground(density, Color.parseColor("#4F46E5"), 12f)
                 layoutParams = LinearLayout.LayoutParams((22 * density).toInt(), (22 * density).toInt()).apply {
                     marginEnd = (10 * density).toInt()
                 }
@@ -77,13 +128,15 @@ object UIUtils {
             header.addView(titleView)
             addView(header)
 
-            val descView = TextView(context).apply {
-                text = description
-                setTextColor(Color.parseColor("#94A3B8"))
-                textSize = 12f
-                setPadding((32 * density).toInt(), (2 * density).toInt(), 0, (8 * density).toInt())
+            if (description.isNotEmpty()) {
+                val descView = TextView(context).apply {
+                    text = description
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    textSize = 12f
+                    setPadding((32 * density).toInt(), (2 * density).toInt(), 0, (8 * density).toInt())
+                }
+                addView(descView)
             }
-            addView(descView)
         }
     }
 
@@ -99,4 +152,3 @@ object UIUtils {
         }
     }
 }
-

@@ -14,6 +14,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -185,6 +186,45 @@ class ChatController(
         chatMessagesLayout.addView(welcomeNotice)
         chatScrollView.addView(chatMessagesLayout)
         chatSheet.addView(chatScrollView)
+
+        val quickChipsScroll = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (4 * density).toInt()
+                bottomMargin = (4 * density).toInt()
+            }
+        }
+        val quickChipsRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val quickPhrases = listOf(
+            "Haha! 😂",
+            "Wait pause ⏸",
+            "OMG 🔥",
+            "What a scene! 🍿",
+            "Who was that? 🤔",
+            "Let's go! 🚀"
+        )
+        for (phrase in quickPhrases) {
+            val chip = TextView(activity).apply {
+                text = phrase
+                textSize = 11f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor("#E2E8F0"))
+                background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f, Color.parseColor("#334155"), 1)
+                setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    marginEnd = (6 * density).toInt()
+                }
+                setOnClickListener {
+                    onSendMessage(phrase)
+                }
+            }
+            quickChipsRow.addView(chip)
+        }
+        quickChipsScroll.addView(quickChipsRow)
+        chatSheet.addView(quickChipsScroll)
 
         val chatInputRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
