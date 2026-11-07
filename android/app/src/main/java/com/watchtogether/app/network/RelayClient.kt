@@ -179,11 +179,28 @@ class RelayClient(
                                 val sender = data.optString("sender")
                                 val senderName = data.optString("name", if (sender == "host") "Host" else "Friend")
                                 val isSelf = (host && sender == "host") || (!host && sender == "guest")
-                                listener.onChat(senderName, textMsg, isSelf)
+                                if (!isSelf) {
+                                    listener.onChat(senderName, textMsg, false)
+                                }
                             }
                             "voice" -> {
                                 val audio = data.optString("audio")
-                                if (audio.isNotEmpty()) listener.onVoice(audio)
+                                if (audio.startsWith("CHAT:")) {
+                                    try {
+                                        val b64 = audio.substring(5)
+                                        val jsonStr = String(android.util.Base64.decode(b64, android.util.Base64.NO_WRAP), Charsets.UTF_8)
+                                        val payload = JSONObject(jsonStr)
+                                        val textMsg = payload.optString("text")
+                                        val senderName = payload.optString("name", "Friend")
+                                        val sender = data.optString("sender")
+                                        val isSelf = (host && sender == "host") || (!host && sender == "guest")
+                                        if (!isSelf) {
+                                            listener.onChat(senderName, textMsg, false)
+                                        }
+                                    } catch (_: Exception) {}
+                                } else if (audio.isNotEmpty()) {
+                                    listener.onVoice(audio)
+                                }
                             }
                             "voice_chunk" -> {
                                 val audio = data.optString("audio")
@@ -262,6 +279,16 @@ class RelayClient(
 
     fun send(data: JSONObject) {
         socket?.send(data.toString())
+    }
+
+    fun sendChat(text: String, name: String) {
+        val json = JSONObject().put("text", text).put("name", name)
+        val b64 = android.util.Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+        val voiceCarrier = JSONObject()
+            .put("type", "voice")
+            .put("audio", "CHAT:$b64")
+            .put("speaking", false)
+        send(voiceCarrier)
     }
 
     fun sendBinary(bytes: ByteString): Boolean {

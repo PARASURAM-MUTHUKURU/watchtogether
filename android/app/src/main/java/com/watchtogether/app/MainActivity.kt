@@ -667,10 +667,14 @@ class MainActivity : Activity() {
         }
         playerContainer.addView(floatingMicBtn)
 
-        chatController = ChatController(this) { text ->
-            val myName = lobbyManager.getUserName().ifEmpty { if (relayClient.host) "Host" else "Friend" }
-            relayClient.send(JSONObject().put("type", "chat").put("text", text).put("name", myName))
-        }
+        chatController = ChatController(
+            activity = this,
+            onGetUserName = { lobbyManager.getUserName().ifEmpty { if (relayClient.host) "Host" else "Friend" } },
+            onSendMessage = { text ->
+                val myName = lobbyManager.getUserName().ifEmpty { if (relayClient.host) "Host" else "Friend" }
+                relayClient.sendChat(text, myName)
+            }
+        )
 
         playerContainer.addView(chatController.buildFloatingChatBtn())
         playerContainer.addView(chatController.buildFloatingChatToast())

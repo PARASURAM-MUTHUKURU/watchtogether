@@ -25,6 +25,7 @@ import java.util.Locale
 
 class ChatController(
     private val activity: Activity,
+    private val onGetUserName: () -> String = { "You" },
     private val onSendMessage: (text: String) -> Unit
 ) {
     private val ui = Handler(Looper.getMainLooper())
@@ -218,6 +219,8 @@ class ChatController(
                     marginEnd = (6 * density).toInt()
                 }
                 setOnClickListener {
+                    val myName = onGetUserName().ifEmpty { "You" }
+                    handleIncomingChat(myName, phrase, isSelf = true)
                     onSendMessage(phrase)
                 }
             }
@@ -285,7 +288,13 @@ class ChatController(
             chatSheet.translationY = 50f
             chatSheet.animate().alpha(1f).translationY(0f).setDuration(180).start()
             chatScrollView.post { chatScrollView.fullScroll(View.FOCUS_DOWN) }
-            chatInput.requestFocus()
+            chatInput.postDelayed({
+                if (!isDestroyed && isChatOpen) {
+                    chatInput.requestFocus()
+                    val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                    imm?.showSoftInput(chatInput, InputMethodManager.SHOW_IMPLICIT)
+                }
+            }, 100)
         } else {
             chatSheet.animate().alpha(0f).translationY(50f).setDuration(150).withEndAction {
                 chatSheet.visibility = View.GONE
@@ -300,6 +309,8 @@ class ChatController(
         val rawText = chatInput.text?.toString()?.trim() ?: ""
         if (rawText.isEmpty()) return
         chatInput.setText("")
+        val myName = onGetUserName().ifEmpty { "You" }
+        handleIncomingChat(myName, rawText, isSelf = true)
         onSendMessage(rawText)
     }
 
