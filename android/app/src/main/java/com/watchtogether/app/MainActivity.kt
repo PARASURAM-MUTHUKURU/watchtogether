@@ -13,6 +13,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.Vibrator
+import android.os.VibrationEffect
 import android.provider.OpenableColumns
 import android.text.InputType
 import android.util.Rational
@@ -85,6 +87,8 @@ class MainActivity : Activity() {
     private lateinit var clipboardAutoJoinCard: LinearLayout
     private lateinit var friendsHeaderBtn: Button
     private lateinit var floatingMicBtn: TextView
+    private lateinit var dataSaverBadge: TextView
+    private lateinit var reconnectBanner: TextView
 
     // Video Player & Controls Views
     private lateinit var playerContainer: FrameLayout
@@ -116,6 +120,16 @@ class MainActivity : Activity() {
     }
 
     private val hideControlsRunnable = Runnable { setControlsVisible(false) }
+
+    private fun triggerHapticFeedback(isStrong: Boolean = false) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                val duration = if (isStrong) 50L else 20L
+                vibrator?.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
+            }
+        } catch (_: Exception) {}
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -651,6 +665,46 @@ class MainActivity : Activity() {
         )
         playerContainer.addView(playerManager.buildLoadingHud())
 
+        dataSaverBadge = TextView(this).apply {
+            text = "💾 0 MB Video Data Active"
+            textSize = 10f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = UIUtils.roundedBackground(density, Color.parseColor("#D9065F46"), 10f, Color.parseColor("#34D399"), 1)
+            setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.START
+                topMargin = (10 * density).toInt()
+                marginStart = (12 * density).toInt()
+            }
+            visibility = if (guestMovie != null) View.VISIBLE else View.GONE
+            elevation = 15f
+        }
+        playerContainer.addView(dataSaverBadge)
+
+        reconnectBanner = TextView(this).apply {
+            text = "⚠️ Connection Interrupted · Tap to Reconnect ⚡"
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = UIUtils.roundedBackground(density, Color.parseColor("#EEB91C1C"), 12f, Color.parseColor("#FCA5A5"), 1)
+            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                topMargin = (10 * density).toInt()
+            }
+            visibility = View.GONE
+            elevation = 20f
+            setOnClickListener {
+                it.visibility = View.GONE
+                note("⚡ Reconnecting now…")
+                relayClient.connect(isReconnect = true)
+            }
+        }
+        playerContainer.addView(reconnectBanner)
+
         floatingMicBtn = TextView(this).apply {
             text = "🎙️"
             textSize = 17f
@@ -709,6 +763,8 @@ class MainActivity : Activity() {
                 setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
+                    triggerHapticFeedback(false)
+                    emojiManager.spawn(emoji)
                     animate().scaleX(1.3f).scaleY(1.3f).setDuration(100).withEndAction {
                         animate().scaleX(1f).scaleY(1f).setDuration(100).start()
                     }.start()
@@ -864,6 +920,8 @@ class MainActivity : Activity() {
                     guestMovie = guestMovie
                 )
                 updateScreenMode()
+                if (::reconnectBanner.isInitialized) reconnectBanner.visibility = View.GONE
+                if (::dataSaverBadge.isInitialized) dataSaverBadge.visibility = if (guestMovie != null) View.VISIBLE else View.GONE
                 note(if (relayClient.host) "🟢 Ready! Tap Play to preview or share invite." else "🟢 Joined! Buffering movie…")
             }
 
@@ -873,10 +931,12 @@ class MainActivity : Activity() {
 
             override fun onReaction(emoji: String) {
                 emojiManager.spawn(emoji)
+                triggerHapticFeedback(false)
             }
 
             override fun onChat(senderName: String, text: String, isSelf: Boolean) {
                 chatController.handleIncomingChat(senderName, text, isSelf)
+                if (!isSelf) triggerHapticFeedback(true)
             }
 
             override fun onVoice(audioBase64: String) {
@@ -914,7 +974,15 @@ class MainActivity : Activity() {
                 note("Host closed the room.")
             }
 
-            override fun onNote(message: String) { note(message) }
+            override fun onNote(message: String) {
+                note(message)
+                if (message.contains("Reconnecting", ignoreCase = true) || message.contains("Connection interrupted", ignoreCase = true)) {
+                    if (::reconnectBanner.isInitialized && relayClient.token.isNotEmpty()) {
+                        reconnectBanner.text = "⚠️ Connection Interrupted · Tap to Reconnect ⚡"
+                        reconnectBanner.visibility = View.VISIBLE
+                    }
+                }
+            }
 
             override fun onLeftRoom() { leave() }
         })
@@ -1217,6 +1285,8 @@ class MainActivity : Activity() {
         emojiManager.clear()
         movieChannel.close()
         inviteInput.text.clear()
+        if (::reconnectBanner.isInitialized) reconnectBanner.visibility = View.GONE
+        if (::dataSaverBadge.isInitialized) dataSaverBadge.visibility = View.GONE
         updateScreenMode()
         note("Left room · Ready for next movie")
     }
