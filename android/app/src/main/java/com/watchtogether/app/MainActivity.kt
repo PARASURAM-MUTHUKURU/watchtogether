@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -30,7 +31,10 @@ import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.MimeTypeMap
 import android.widget.*
 import androidx.media3.common.MediaItem
@@ -55,6 +59,9 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -125,6 +132,26 @@ class MainActivity : Activity() {
     private var pendingInitialSeek = 0L
     private var remoteMime = ""
     private var remoteSize = 0L
+
+    // In-App Real-time Chat
+    private lateinit var chatSheet: LinearLayout
+    private lateinit var chatMessagesLayout: LinearLayout
+    private lateinit var chatScrollView: ScrollView
+    private lateinit var chatInput: EditText
+    private lateinit var chatSendBtn: TextView
+    private lateinit var chatToggleBtn: TextView
+    private lateinit var floatingChatBtn: TextView
+    private lateinit var floatingChatToast: LinearLayout
+    private lateinit var floatingChatToastText: TextView
+    private var isChatOpen = false
+    private var unreadChatCount = 0
+    private val hideChatToastRunnable = Runnable {
+        if (!destroyed && ::floatingChatToast.isInitialized) {
+            floatingChatToast.animate().alpha(0f).setDuration(250).withEndAction {
+                floatingChatToast.visibility = View.GONE
+            }.start()
+        }
+    }
 
     // Push-to-Talk (Walkie-Talkie) State
     private var recorder: MediaRecorder? = null
@@ -922,6 +949,51 @@ class MainActivity : Activity() {
         }
         playerContainer.addView(floatingMicBtn)
 
+        // 5b. Floating Quick Chat Button (Positioned at bottom-left for easy thumb reach)
+        floatingChatBtn = TextView(this).apply {
+            text = "💬"
+            textSize = 17f
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.parseColor("#CC1E293B"), 18f, Color.parseColor("#3B82F6"), 1)
+            layoutParams = FrameLayout.LayoutParams((42 * density).toInt(), (42 * density).toInt()).apply {
+                gravity = Gravity.BOTTOM or Gravity.START
+                bottomMargin = (72 * density).toInt()
+                marginStart = (14 * density).toInt()
+            }
+            elevation = 15f
+            setOnClickListener {
+                toggleChat()
+            }
+        }
+        playerContainer.addView(floatingChatBtn)
+
+        // 5c. Floating Chat Toast (Pops up over the video when friend messages, auto-hides after 4.5s)
+        floatingChatToast = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedBackground(Color.parseColor("#F00F172A"), 14f, Color.parseColor("#3B82F6"), 1)
+            setPadding((12 * density).toInt(), (7 * density).toInt(), (14 * density).toInt(), (7 * density).toInt())
+            elevation = 20f
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.BOTTOM or Gravity.START
+                bottomMargin = (122 * density).toInt()
+                marginStart = (14 * density).toInt()
+                marginEnd = (14 * density).toInt()
+            }
+            setOnClickListener {
+                toggleChat()
+            }
+        }
+        floatingChatToastText = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        floatingChatToast.addView(floatingChatToastText)
+        playerContainer.addView(floatingChatToast)
+
         mainLayout.addView(playerContainer)
 
         // Unified Controls Group (Reactions + Seekbar + Buttons)
@@ -1032,6 +1104,24 @@ class MainActivity : Activity() {
             }
         }
         reactionBar.addView(openMicBtn)
+
+        // Dedicated In-App Chat Toggle in Controls Bar
+        chatToggleBtn = TextView(this).apply {
+            text = "💬 Chat"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.parseColor("#1E3A8A"), 8f, Color.parseColor("#3B82F6"), 1)
+            setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = (4 * density).toInt()
+            }
+            setOnClickListener {
+                toggleChat()
+            }
+        }
+        reactionBar.addView(chatToggleBtn)
         controlsGroup.addView(reactionBar)
 
         // 2. Interactive Seekbar / Scrubber Row
@@ -1134,7 +1224,122 @@ class MainActivity : Activity() {
 
         mainLayout.addView(controlsGroup)
 
-        setContentView(mainLayout)
+        // In-App Chat Slide-Up Sheet
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        chatSheet = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(Color.parseColor("#F50F172A"), 16f, Color.parseColor("#334155"), 1)
+            elevation = 30f
+            visibility = View.GONE
+            setPadding((12 * density).toInt(), (10 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
+            layoutParams = FrameLayout.LayoutParams(
+                if (isLandscape) (340 * density).toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
+                if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (300 * density).toInt()
+            ).apply {
+                gravity = if (isLandscape) Gravity.END or Gravity.BOTTOM else Gravity.BOTTOM
+                bottomMargin = (6 * density).toInt()
+                marginStart = (6 * density).toInt()
+                marginEnd = (6 * density).toInt()
+                topMargin = if (isLandscape) (6 * density).toInt() else 0
+            }
+        }
+
+        val chatHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((4 * density).toInt(), 0, (4 * density).toInt(), (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        val chatTitle = TextView(this).apply {
+            text = "💬 Room Chat"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val chatCloseBtn = TextView(this).apply {
+            text = "✕"
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding((8 * density).toInt(), (3 * density).toInt(), (8 * density).toInt(), (3 * density).toInt())
+            background = roundedBackground(Color.parseColor("#1E293B"), 10f)
+            setOnClickListener { toggleChat() }
+        }
+        chatHeader.addView(chatTitle)
+        chatHeader.addView(chatCloseBtn)
+        chatSheet.addView(chatHeader)
+
+        chatScrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            isFillViewport = true
+        }
+        chatMessagesLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        val welcomeNotice = TextView(this).apply {
+            text = "👋 Welcome to Room Chat! Messages are live and private to this room."
+            setTextColor(Color.parseColor("#64748B"))
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+        }
+        chatMessagesLayout.addView(welcomeNotice)
+        chatScrollView.addView(chatMessagesLayout)
+        chatSheet.addView(chatScrollView)
+
+        val chatInputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (6 * density).toInt()
+            }
+        }
+        chatInput = EditText(this).apply {
+            hint = "Type a message…"
+            setHintTextColor(Color.parseColor("#64748B"))
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            background = roundedBackground(Color.parseColor("#1E293B"), 10f, Color.parseColor("#334155"), 1)
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            maxLines = 3
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    sendCurrentChatMessage()
+                    true
+                } else false
+            }
+        }
+        chatSendBtn = TextView(this).apply {
+            text = "➤"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.parseColor("#2563EB"), 10f)
+            setPadding((14 * density).toInt(), (8 * density).toInt(), (14 * density).toInt(), (8 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = (6 * density).toInt()
+            }
+            setOnClickListener {
+                sendCurrentChatMessage()
+            }
+        }
+        chatInputRow.addView(chatInput)
+        chatInputRow.addView(chatSendBtn)
+        chatSheet.addView(chatInputRow)
+
+        val rootLayout = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        rootLayout.addView(mainLayout, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        rootLayout.addView(chatSheet)
+
+        setContentView(rootLayout)
         selectTab(true)
         ui.post(tick)
 
@@ -2272,6 +2477,13 @@ class MainActivity : Activity() {
                                 val emoji = data.optString("emoji", "🍿")
                                 spawnFloatingEmoji(emoji)
                             }
+                            "chat" -> {
+                                val text = data.optString("text")
+                                val sender = data.optString("sender")
+                                val senderName = data.optString("name", if (sender == "host") "Host" else "Friend")
+                                val isSelf = (host && sender == "host") || (!host && sender == "guest")
+                                handleIncomingChat(senderName, text, isSelf)
+                            }
                             "voice" -> {
                                 val audio = data.optString("audio")
                                 if (audio.isNotEmpty()) playIncomingVoice(audio)
@@ -2920,6 +3132,152 @@ class MainActivity : Activity() {
         note("📨 Invited $targetName! Waiting for them to accept…")
     }
 
+    private fun toggleChat() {
+        if (destroyed || !::chatSheet.isInitialized) return
+        isChatOpen = !isChatOpen
+        if (isChatOpen) {
+            unreadChatCount = 0
+            floatingChatBtn.text = "💬"
+            chatToggleBtn.text = "💬 Chat"
+            ui.removeCallbacks(hideChatToastRunnable)
+            floatingChatToast.visibility = View.GONE
+            chatSheet.visibility = View.VISIBLE
+            chatSheet.alpha = 0f
+            chatSheet.translationY = 50f
+            chatSheet.animate().alpha(1f).translationY(0f).setDuration(180).start()
+            chatScrollView.post { chatScrollView.fullScroll(View.FOCUS_DOWN) }
+            chatInput.requestFocus()
+        } else {
+            chatSheet.animate().alpha(0f).translationY(50f).setDuration(150).withEndAction {
+                chatSheet.visibility = View.GONE
+            }.start()
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(chatInput.windowToken, 0)
+        }
+    }
+
+    private fun sendCurrentChatMessage() {
+        if (destroyed || !::chatInput.isInitialized) return
+        val rawText = chatInput.text?.toString()?.trim() ?: ""
+        if (rawText.isEmpty()) return
+        chatInput.setText("")
+        val myName = if (myUserName.isNotEmpty()) myUserName else if (host) "Host" else "Friend"
+        try {
+            val payload = JSONObject().apply {
+                put("type", "chat")
+                put("text", rawText)
+                put("name", myName)
+            }
+            send(payload)
+        } catch (_: Exception) {}
+    }
+
+    private fun handleIncomingChat(senderName: String, text: String, isSelf: Boolean) {
+        ui.post {
+            if (destroyed || !::chatMessagesLayout.isInitialized) return@post
+            val density = resources.displayMetrics.density
+            val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+
+            val bubbleContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = if (isSelf) Gravity.END else Gravity.START
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = (3 * density).toInt()
+                    bottomMargin = (3 * density).toInt()
+                }
+            }
+
+            val bubble = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = if (isSelf) {
+                    roundedBackground(Color.parseColor("#2563EB"), 12f)
+                } else {
+                    roundedBackground(Color.parseColor("#1E293B"), 12f, Color.parseColor("#334155"), 1)
+                }
+                setPadding((12 * density).toInt(), (7 * density).toInt(), (12 * density).toInt(), (7 * density).toInt())
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = if (isSelf) Gravity.END else Gravity.START
+                }
+            }
+
+            if (!isSelf) {
+                val nameView = TextView(this).apply {
+                    this.text = senderName
+                    setTextColor(Color.parseColor("#38BDF8"))
+                    textSize = 10f
+                    typeface = Typeface.DEFAULT_BOLD
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = (2 * density).toInt()
+                    }
+                }
+                bubble.addView(nameView)
+            }
+
+            val msgView = TextView(this).apply {
+                this.text = text
+                setTextColor(Color.WHITE)
+                textSize = 13f
+            }
+            bubble.addView(msgView)
+
+            val timeView = TextView(this).apply {
+                this.text = timeStr
+                setTextColor(if (isSelf) Color.parseColor("#BFDBFE") else Color.parseColor("#64748B"))
+                textSize = 9f
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = Gravity.END
+                    topMargin = (2 * density).toInt()
+                }
+            }
+            bubble.addView(timeView)
+
+            bubbleContainer.addView(bubble)
+            chatMessagesLayout.addView(bubbleContainer)
+
+            chatScrollView.post {
+                chatScrollView.fullScroll(View.FOCUS_DOWN)
+            }
+
+            if (!isChatOpen) {
+                unreadChatCount++
+                floatingChatBtn.text = "💬 $unreadChatCount"
+                chatToggleBtn.text = "💬 ($unreadChatCount)"
+
+                floatingChatToastText.text = "💬 $senderName: $text"
+                floatingChatToast.visibility = View.VISIBLE
+                floatingChatToast.alpha = 1f
+                ui.removeCallbacks(hideChatToastRunnable)
+                ui.postDelayed(hideChatToastRunnable, 4500)
+            }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::chatSheet.isInitialized) {
+            val density = resources.displayMetrics.density
+            val isLandscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+            chatSheet.layoutParams = FrameLayout.LayoutParams(
+                if (isLandscape) (340 * density).toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
+                if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (300 * density).toInt()
+            ).apply {
+                gravity = if (isLandscape) Gravity.END or Gravity.BOTTOM else Gravity.BOTTOM
+                bottomMargin = (6 * density).toInt()
+                marginStart = (6 * density).toInt()
+                marginEnd = (6 * density).toInt()
+                topMargin = if (isLandscape) (6 * density).toInt() else 0
+            }
+        }
+    }
+
+    override fun onBackPressed() {
+        if (isChatOpen) {
+            toggleChat()
+            return
+        }
+        super.onBackPressed()
+    }
+
     private fun leave() {
         val roomToRevoke = code
         val tokenToRevoke = token
@@ -2959,11 +3317,28 @@ class MainActivity : Activity() {
         player?.release(); player = null; video.player = null
         connected = false; connecting = false; invite = ""; latest = null
         if (::emojiContainer.isInitialized) emojiContainer.removeAllViews()
+        if (isChatOpen) toggleChat()
+        unreadChatCount = 0
+        if (::floatingChatBtn.isInitialized) floatingChatBtn.text = "💬"
+        if (::chatToggleBtn.isInitialized) chatToggleBtn.text = "💬 Chat"
+        if (::floatingChatToast.isInitialized) floatingChatToast.visibility = View.GONE
+        if (::chatMessagesLayout.isInitialized) {
+            chatMessagesLayout.removeAllViews()
+            val welcomeNotice = TextView(this).apply {
+                val density = resources.displayMetrics.density
+                text = "👋 Welcome to Room Chat! Messages are live and private to this room."
+                setTextColor(Color.parseColor("#64748B"))
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+            }
+            chatMessagesLayout.addView(welcomeNotice)
+        }
         updateScreenMode()
         note("Left room · Ready for next movie")
     }
     override fun onDestroy() {
-        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); ui.removeCallbacks(lobbyReconnectTask); lobbySocket?.close(1000, "Destroyed"); lobbySocket = null; leave(); closeMovieChannel(); worker.shutdownNow(); videoWorker.shutdownNow(); audioWorker.shutdownNow(); client.dispatcher.executorService.shutdown()
+        destroyed = true; ui.removeCallbacks(tick); ui.removeCallbacks(reconnectTask); ui.removeCallbacks(progressUpdater); ui.removeCallbacks(hideControlsRunnable); ui.removeCallbacks(hideHudRunnable); ui.removeCallbacks(singleTapRunnable); ui.removeCallbacks(incomingSilenceRunnable); ui.removeCallbacks(hideChatToastRunnable); ui.removeCallbacks(lobbyReconnectTask); lobbySocket?.close(1000, "Destroyed"); lobbySocket = null; leave(); closeMovieChannel(); worker.shutdownNow(); videoWorker.shutdownNow(); audioWorker.shutdownNow(); client.dispatcher.executorService.shutdown()
         super.onDestroy()
     }
 }

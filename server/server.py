@@ -306,6 +306,20 @@ async def socket(request):
                                 await peer.send_json(msg)
                             except Exception:
                                 pass
+                elif kind == 'chat':
+                    if not controls.allow():
+                        raise ValueError()
+                    text = str(data.get('text', '')).strip()
+                    if not text or len(text) > 500:
+                        raise ValueError()
+                    name = str(data.get('name', 'Friend')).strip()[:40] or 'Friend'
+                    msg = {'type': 'chat', 'text': text, 'sender': role, 'name': name, 'time': int(time.time()*1000)}
+                    for peer in (room.host, room.guest):
+                        if peer and not peer.closed:
+                            try:
+                                await peer.send_json(msg)
+                            except Exception:
+                                pass
                 elif kind in ('voice', 'voice_chunk'):
                     audio = data.get('audio', '')
                     if not isinstance(audio, str) or len(audio) > 350_000:

@@ -307,6 +307,12 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await guest.send_json({'type': 'reaction', 'emoji': '🍿'})
         res = await guest.receive_json(timeout=2)
         self.assertEqual(res, {'type': 'reaction', 'emoji': '🍿', 'sender': 'guest'})
+        await guest.send_json({'type': 'chat', 'text': 'Hello friend!', 'name': 'Alex'})
+        chat_msg = await guest.receive_json(timeout=2)
+        self.assertEqual(chat_msg.get('type'), 'chat')
+        self.assertEqual(chat_msg.get('text'), 'Hello friend!')
+        self.assertEqual(chat_msg.get('sender'), 'guest')
+        self.assertEqual(chat_msg.get('name'), 'Alex')
         await guest.close()
 
     async def test_solo_host_playback_and_guest_sync(self):
