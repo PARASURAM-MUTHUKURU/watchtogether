@@ -375,6 +375,11 @@ class ChatController(
             bubbleContainer.addView(bubble)
             chatMessagesLayout.addView(bubbleContainer)
 
+            // DSA: Bounded Queue eviction to maintain O(1) view tree size and prevent memory leaks
+            if (chatMessagesLayout.childCount > 80) {
+                chatMessagesLayout.removeViewAt(1)
+            }
+
             chatScrollView.post {
                 chatScrollView.fullScroll(View.FOCUS_DOWN)
             }

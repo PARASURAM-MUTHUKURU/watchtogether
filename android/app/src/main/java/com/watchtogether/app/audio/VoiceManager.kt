@@ -38,6 +38,10 @@ class VoiceManager(
     private val audioWorker: ExecutorService = Executors.newSingleThreadExecutor()
     private val density = activity.resources.displayMetrics.density
 
+    // DSA: Power-of-Two Lock-Free Circular Ring Buffer for smooth jitter absorption during live audio streaming
+    private val audioJitterBuffer = com.watchtogether.app.dsa.CircularAudioBuffer(powerOfTwoCapacity = 32768)
+    private val audioPlaybackTempBuf = ByteArray(2048)
+
     lateinit var micBtn: TextView
     lateinit var openMicBtn: TextView
     lateinit var floatingMicBtn: TextView
@@ -439,6 +443,7 @@ class VoiceManager(
 
     fun stopLiveAudioTrack() {
         synchronized(this) {
+            audioJitterBuffer.clear()
             try {
                 liveAudioEnhancer?.release()
             } catch (_: Exception) {}
@@ -460,7 +465,16 @@ class VoiceManager(
             audioWorker.execute {
                 try {
                     val pcmBytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
-                    getOrCreateLiveAudioTrack().write(pcmBytes, 0, pcmBytes.size)
+                    audioJitterBuffer.write(pcmBytes, 0, pcmBytes.size)
+                    val track = getOrCreateLiveAudioTrack()
+                    while (audioJitterBuffer.availableRead() > 0) {
+                        val readBytes = audioJitterBuffer.read(audioPlaybackTempBuf, 0, audioPlaybackTempBuf.size)
+                        if (readBytes > 0) {
+                            track.write(audioPlaybackTempBuf, 0, readBytes)
+                        } else {
+                            break
+                        }
+                    }
                 } catch (_: Exception) {}
             }
             ui.post {
@@ -471,6 +485,9 @@ class VoiceManager(
                 ui.postDelayed(incomingSilenceRunnable, 1500L)
             }
         } else if (!isSpeaking) {
+            audioWorker.execute {
+                audioJitterBuffer.clear()
+            }
             ui.post {
                 if (isDestroyed) return@post
                 ui.removeCallbacks(incomingSilenceRunnable)
@@ -584,6 +601,7 @@ class VoiceManager(
     }
 
     fun reset() {
+        audioJitterBuffer.clear()
         if (isVoiceLocked) stopLiveVoiceStreaming()
         stopLiveAudioTrack()
         if (isRecording) stopVoiceRecording(sendAudio = false)

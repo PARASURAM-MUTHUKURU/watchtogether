@@ -108,6 +108,9 @@ class MainActivity : Activity() {
     private var destroyed = false
     private var controlsVisible = true
 
+    // DSA: Token Bucket Rate Limiter for reaction animations and network optimization
+    private val reactionLimiter = com.watchtogether.app.dsa.TokenBucketLimiter(capacity = 6.0, refillRatePerSecond = 2.5)
+
     private val tick = object : Runnable {
         override fun run() {
             if (relayClient.host && relayClient.connected) {
@@ -763,6 +766,7 @@ class MainActivity : Activity() {
                 setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
+                    if (!reactionLimiter.tryAcquire(1.0)) return@setOnClickListener
                     triggerHapticFeedback(false)
                     emojiManager.spawn(emoji)
                     animate().scaleX(1.3f).scaleY(1.3f).setDuration(100).withEndAction {

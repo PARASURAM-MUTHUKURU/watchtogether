@@ -68,6 +68,9 @@ class SyncPlayerManager(
     var isUserSeeking = false
     private var isDestroyed = false
 
+    // DSA: Sliding Window Median Filter for network jitter absorption & stable clock drift estimation
+    private val driftFilter = com.watchtogether.app.dsa.DriftJitterFilter(capacity = 7)
+
     val progressUpdater = object : Runnable {
         override fun run() {
             if (isDestroyed) return
@@ -328,7 +331,13 @@ class SyncPlayerManager(
         if (playing) {
             onResetControlsTimer()
             if (p.playbackState == Player.STATE_READY) {
-                val drift = position - p.currentPosition
+                val rawDrift = position - p.currentPosition
+                val drift = if (abs(rawDrift) > 3500) {
+                    driftFilter.reset()
+                    rawDrift
+                } else {
+                    driftFilter.addSample(rawDrift)
+                }
                 when {
                     abs(drift) > 3500 -> {
                         p.seekTo(position)
@@ -339,6 +348,7 @@ class SyncPlayerManager(
                     else -> p.playbackParameters = PlaybackParameters(1.0f)
                 }
             } else {
+                driftFilter.reset()
                 pendingInitialSeek = position
             }
         } else {
@@ -354,6 +364,7 @@ class SyncPlayerManager(
 
     fun seekRelative(deltaMs: Long, isConnected: Boolean) {
         val p = player ?: return
+        driftFilter.reset()
         val current = p.currentPosition
         val duration = p.duration
         val target = if (duration > 0) (current + deltaMs).coerceIn(0L, duration) else maxOf(0L, current + deltaMs)
@@ -365,6 +376,7 @@ class SyncPlayerManager(
     }
 
     fun control(position: Long, playing: Boolean, isConnected: Boolean) {
+        driftFilter.reset()
         if (isConnected && player != null) {
             onSendControl(position, playing)
             onResetControlsTimer()
@@ -377,6 +389,7 @@ class SyncPlayerManager(
 
     fun release() {
         ui.removeCallbacks(progressUpdater)
+        driftFilter.reset()
         lastSentBufferPct = -1
         lastReady = null
         latest = null
