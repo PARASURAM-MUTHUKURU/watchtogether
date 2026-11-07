@@ -148,7 +148,7 @@ class RelayClient(
     }
 
     fun connect(isReconnect: Boolean = false) {
-        val reconnectParam = if (isReconnect || reconnectAttempts > 0) "?reconnect=1" else ""
+        val reconnectParam = if (isReconnect || reconnectAttempts > 0 || token.isNotEmpty()) "?reconnect=1" else ""
         val wsUrl = base.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/rooms/$code/ws$reconnectParam"
         val request = Request.Builder().url(wsUrl).header("Authorization", "Bearer $token").build()
 
@@ -202,12 +202,14 @@ class RelayClient(
                 ui.post {
                     if (socket === webSocket) {
                         val is404 = response?.code == 404 || t.message?.contains("404") == true
+                        val is409 = response?.code == 409 || t.message?.contains("409") == true
                         if (is404) {
                             val wasHost = host
                             leave()
                             listener.onRoomExpired(wasHost)
                         } else if (token.isNotEmpty() && !isDestroyed) {
-                            scheduleReconnect(t.message ?: "network error")
+                            val msg = if (is409) "Server synchronizing session" else (t.message ?: "network connection lost")
+                            scheduleReconnect(msg, is409 = is409)
                         } else {
                             leave()
                             listener.onNote("Connection lost: ${t.message}. Create or join a room again.")
@@ -238,18 +240,22 @@ class RelayClient(
         })
     }
 
-    private fun scheduleReconnect(errorMsg: String) {
+    private fun scheduleReconnect(errorMsg: String, is409: Boolean = false) {
         socket = null
         connected = false
-        if (reconnectAttempts >= 15) {
-            reconnectAttempts = 0
-            leave()
-            listener.onNote("Connection lost: $errorMsg. Create or join again.")
-            return
-        }
         reconnectAttempts++
-        val delay = (1000L * reconnectAttempts).coerceIn(1200L, 3500L)
-        listener.onNote("Connection interrupted · Reconnecting in ${delay / 1000}s (attempt $reconnectAttempts/15)…")
+        val delay = when {
+            is409 -> (2000L * reconnectAttempts).coerceIn(2000L, 5000L)
+            reconnectAttempts <= 5 -> (1000L * reconnectAttempts).coerceIn(1200L, 3000L)
+            reconnectAttempts <= 15 -> 3500L
+            else -> 5000L
+        }
+        val noteMsg = if (reconnectAttempts > 15) {
+            "Connection paused · Retrying… (Check your internet or Wi-Fi data)"
+        } else {
+            "Connection interrupted · Reconnecting in ${delay / 1000}s (attempt $reconnectAttempts)…"
+        }
+        listener.onNote(noteMsg)
         ui.removeCallbacks(reconnectTask)
         ui.postDelayed(reconnectTask, delay)
     }

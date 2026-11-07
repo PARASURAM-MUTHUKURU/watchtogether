@@ -118,7 +118,8 @@ async def join(request):
     invitation = bearer(request)
     if not matches(invitation, room.invite_hash) or time.monotonic() >= room.invite_expires:
         raise web.HTTPUnauthorized(text='Invite invalid, already used or expired')
-    if room.host is None:
+    # If host is not connected and the room was not just created, advise waiting
+    if room.host is None and (time.monotonic() - room.created > 90.0 and room.host_disconnected > 0 and time.monotonic() - room.host_disconnected > 30.0):
         raise web.HTTPConflict(text='Wait for the host to connect')
     # If a previous guest session is still open or reserved, clean it up so reconnection is instant
     room.reserved.discard('guest')
@@ -193,8 +194,8 @@ async def lifecycle(app):
 async def socket(request):
     room, role = resolve(request)
     is_reconnect = request.query.get('reconnect') == '1'
-    if is_reconnect:
-        old_ws = getattr(room, role)
+    old_ws = getattr(room, role)
+    if is_reconnect or (old_ws is not None and old_ws.closed):
         if old_ws is not None and not old_ws.closed:
             try:
                 await old_ws.close(code=1000, message=b'Replaced by reconnect')

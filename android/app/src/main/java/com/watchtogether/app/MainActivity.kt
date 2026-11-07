@@ -83,6 +83,8 @@ class MainActivity : Activity() {
     private lateinit var guestMovieLabel: TextView
     private lateinit var clearGuestMovieBtn: Button
     private lateinit var clipboardAutoJoinCard: LinearLayout
+    private lateinit var friendsHeaderBtn: Button
+    private lateinit var floatingMicBtn: TextView
 
     // Video Player & Controls Views
     private lateinit var playerContainer: FrameLayout
@@ -183,7 +185,7 @@ class MainActivity : Activity() {
                 marginEnd = (4 * density).toInt()
             }
         }
-        val friendsHeaderBtn = UIUtils.styledButton(this, density, "👥 Friends", Color.parseColor("#059669")) {
+        friendsHeaderBtn = UIUtils.styledButton(this, density, "👥 Friends", Color.parseColor("#059669")) {
             lobbyManager.showFriendsInviteDialog()
         }.apply {
             textSize = 11f
@@ -536,7 +538,6 @@ class MainActivity : Activity() {
             if (!relayClient.connected && !relayClient.connecting) joinRoom()
         }
         joinStep2.addView(joinBtn)
-        joinStep2.addView(joinBtn)
         joinContainer.addView(joinStep2)
 
         val dataSaverCard = UIUtils.stepCard(this, density, "💾", "Data Saver Option (Optional)", "Have this movie on your phone? Play locally to use 0 MB video data!")
@@ -606,7 +607,7 @@ class MainActivity : Activity() {
             },
             onNote = { note(it) }
         )
-        lobbyManager.initViews(userBadge, onlineFriendsContainer, (sessionHeader.getChildAt(0) as LinearLayout).getChildAt(1) as TextView)
+        lobbyManager.initViews(userBadge, onlineFriendsContainer, friendsHeaderBtn)
     }
 
     private fun buildPlayerUI(density: Float) {
@@ -650,7 +651,7 @@ class MainActivity : Activity() {
         )
         playerContainer.addView(playerManager.buildLoadingHud())
 
-        val floatingMicBtn = TextView(this).apply {
+        floatingMicBtn = TextView(this).apply {
             text = "🎙️"
             textSize = 17f
             gravity = Gravity.CENTER
@@ -843,8 +844,7 @@ class MainActivity : Activity() {
             onHideHudDelayed = { gestureController.hideHudDelayed() },
             onNote = { note(it) }
         )
-        val floatingMic = playerContainer.getChildAt(5) as TextView
-        voiceManager.initButtons(micBtn, openMicBtn, floatingMic)
+        voiceManager.initButtons(micBtn, openMicBtn, floatingMicBtn)
     }
 
     private fun initSubsystems(density: Float) {
