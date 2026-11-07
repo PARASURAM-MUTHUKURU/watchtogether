@@ -7,6 +7,7 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -23,6 +24,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.ui.PlayerView
@@ -60,6 +62,9 @@ class SyncPlayerManager(
     lateinit var timeTotal: TextView
 
     var pendingInitialSeek = 0L
+    private var hasInitialSeekApplied = false
+    private var lastLocalSeekTimestamp = 0L
+    private var activeSeekTarget = -1L
     var remoteMime = ""
     var remoteSize = 0L
     var lastSentBufferPct = -1
@@ -70,6 +75,15 @@ class SyncPlayerManager(
 
     // DSA: Sliding Window Median Filter for network jitter absorption & stable clock drift estimation
     private val driftFilter = com.watchtogether.app.dsa.DriftJitterFilter(capacity = 7)
+
+    private val debouncedControlRunnable = Runnable {
+        if (!isDestroyed && activeSeekTarget >= 0L) {
+            val target = activeSeekTarget
+            val playing = player?.playWhenReady ?: false
+            onSendControl(target, playing)
+            onResetControlsTimer()
+        }
+    }
 
     val progressUpdater = object : Runnable {
         override fun run() {
@@ -173,7 +187,7 @@ class SyncPlayerManager(
         val extractorsFactory = DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
         val mediaSourceFactory = DefaultMediaSourceFactory(factory, extractorsFactory)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(3_000, 15_000, 1_000, 2_000)
+            .setBufferDurationsMs(2_500, 15_000, 400, 500)
             .setBackBuffer(5_000, true)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -181,6 +195,7 @@ class SyncPlayerManager(
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .build()
+        p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
         player = p
         videoView.player = p
 
@@ -202,10 +217,13 @@ class SyncPlayerManager(
                     }
                     Player.STATE_READY -> {
                         updateLoadingHud(false)
-                        if (pendingInitialSeek > 1500L) {
+                        if (!hasInitialSeekApplied && pendingInitialSeek > 1500L) {
+                            hasInitialSeekApplied = true
                             val target = pendingInitialSeek
                             pendingInitialSeek = 0L
                             p.seekTo(target)
+                        } else if (!hasInitialSeekApplied) {
+                            hasInitialSeekApplied = true
                         }
                         val isPlaying = player?.playWhenReady == true
                         updatePlayPauseButtons(isPlaying)
@@ -328,47 +346,74 @@ class SyncPlayerManager(
             }
         }
 
+        val timeSinceLocalSeek = SystemClock.elapsedRealtime() - lastLocalSeekTimestamp
+        val isLocalSeekActive = isUserSeeking || timeSinceLocalSeek < 2000L
+
         if (playing) {
             onResetControlsTimer()
             if (p.playbackState == Player.STATE_READY) {
-                val rawDrift = position - p.currentPosition
-                val drift = if (abs(rawDrift) > 3500) {
-                    driftFilter.reset()
-                    rawDrift
-                } else {
-                    driftFilter.addSample(rawDrift)
-                }
-                when {
-                    abs(drift) > 3500 -> {
-                        p.seekTo(position)
-                        p.playbackParameters = PlaybackParameters(1.0f)
+                if (!isLocalSeekActive) {
+                    val rawDrift = position - p.currentPosition
+                    val drift = if (abs(rawDrift) > 3500) {
+                        driftFilter.reset()
+                        rawDrift
+                    } else {
+                        driftFilter.addSample(rawDrift)
                     }
-                    drift > 200 -> p.playbackParameters = PlaybackParameters(1.04f)
-                    drift < -200 -> p.playbackParameters = PlaybackParameters(0.96f)
-                    else -> p.playbackParameters = PlaybackParameters(1.0f)
+                    when {
+                        abs(drift) > 3500 -> {
+                            p.seekTo(position)
+                            p.playbackParameters = PlaybackParameters(1.0f)
+                        }
+                        drift > 200 -> p.playbackParameters = PlaybackParameters(1.04f)
+                        drift < -200 -> p.playbackParameters = PlaybackParameters(0.96f)
+                        else -> p.playbackParameters = PlaybackParameters(1.0f)
+                    }
                 }
-            } else {
+            } else if (!hasInitialSeekApplied) {
                 driftFilter.reset()
                 pendingInitialSeek = position
             }
         } else {
             onSetControlsVisible(true)
             p.playbackParameters = PlaybackParameters(1.0f)
-            if (p.playbackState == Player.STATE_READY && abs(p.currentPosition - position) > 3000) {
-                p.seekTo(position)
-            } else if (p.playbackState != Player.STATE_READY) {
-                pendingInitialSeek = position
+            if (!isLocalSeekActive) {
+                if (p.playbackState == Player.STATE_READY && abs(p.currentPosition - position) > 3000) {
+                    p.seekTo(position)
+                } else if (!hasInitialSeekApplied && p.playbackState != Player.STATE_READY) {
+                    pendingInitialSeek = position
+                }
             }
         }
     }
 
     fun seekRelative(deltaMs: Long, isConnected: Boolean) {
         val p = player ?: return
-        driftFilter.reset()
-        val current = p.currentPosition
+        val now = SystemClock.elapsedRealtime()
         val duration = p.duration
-        val target = if (duration > 0) (current + deltaMs).coerceIn(0L, duration) else maxOf(0L, current + deltaMs)
+        val basePos = if (now - lastLocalSeekTimestamp < 800L && activeSeekTarget >= 0L) {
+            activeSeekTarget
+        } else {
+            p.currentPosition
+        }
+        val target = if (duration > 0) (basePos + deltaMs).coerceIn(0L, duration) else maxOf(0L, basePos + deltaMs)
+        activeSeekTarget = target
+        lastLocalSeekTimestamp = now
+        driftFilter.reset()
         p.seekTo(target)
+        if (isConnected) {
+            ui.removeCallbacks(debouncedControlRunnable)
+            ui.postDelayed(debouncedControlRunnable, 120L)
+        }
+    }
+
+    fun seekToExplicit(target: Long, isConnected: Boolean) {
+        val p = player ?: return
+        lastLocalSeekTimestamp = SystemClock.elapsedRealtime()
+        activeSeekTarget = target
+        driftFilter.reset()
+        p.seekTo(target)
+        ui.removeCallbacks(debouncedControlRunnable)
         if (isConnected) {
             onSendControl(target, p.playWhenReady)
             onResetControlsTimer()
@@ -377,6 +422,7 @@ class SyncPlayerManager(
 
     fun control(position: Long, playing: Boolean, isConnected: Boolean) {
         driftFilter.reset()
+        ui.removeCallbacks(debouncedControlRunnable)
         if (isConnected && player != null) {
             onSendControl(position, playing)
             onResetControlsTimer()
@@ -389,7 +435,11 @@ class SyncPlayerManager(
 
     fun release() {
         ui.removeCallbacks(progressUpdater)
+        ui.removeCallbacks(debouncedControlRunnable)
         driftFilter.reset()
+        lastLocalSeekTimestamp = 0L
+        activeSeekTarget = -1L
+        hasInitialSeekApplied = false
         lastSentBufferPct = -1
         lastReady = null
         latest = null

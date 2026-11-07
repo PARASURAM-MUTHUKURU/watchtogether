@@ -146,7 +146,7 @@ class PlayerGestureController(
                         if (timeSinceLastTap < doubleTapTimeout && distFromLastTap < 50f * density) {
                             // DOUBLE TAP
                             ui.removeCallbacks(singleTapRunnable)
-                            lastTapTime = 0L
+                            lastTapTime = now // Allow successive rapid taps to chain seamlessly (+10s, +20s, +30s)
                             if (event.x < w / 2f) {
                                 onSeekRelative(-10000L)
                                 showRipple(false)

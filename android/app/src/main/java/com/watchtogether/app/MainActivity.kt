@@ -841,8 +841,7 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(sb: SeekBar) {
                     playerManager.isUserSeeking = false
                     val target = sb.progress.toLong()
-                    playerManager.player?.seekTo(target)
-                    playerManager.control(target, playerManager.player?.playWhenReady ?: false, relayClient.connected)
+                    playerManager.seekToExplicit(target, relayClient.connected)
                 }
             })
         }
@@ -868,6 +867,7 @@ class MainActivity : Activity() {
             marginEnd = (4 * density).toInt()
         }
         val b30 = UIUtils.styledButton(this, density, "-30s", Color.parseColor("#334155")) {
+            triggerHapticFeedback(false)
             playerManager.seekRelative(-30000L, relayClient.connected)
         }.apply { layoutParams = ctrlParams(); textSize = 12f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
         val bPlay = UIUtils.styledButton(this, density, "▶ Play", Color.parseColor("#2563EB")) {
@@ -881,6 +881,7 @@ class MainActivity : Activity() {
             playerManager.player?.let { playerManager.control(it.currentPosition, false, relayClient.connected) }
         }.apply { layoutParams = ctrlParams(); textSize = 13f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
         val bPlus30 = UIUtils.styledButton(this, density, "+30s", Color.parseColor("#334155")) {
+            triggerHapticFeedback(false)
             playerManager.seekRelative(30000L, relayClient.connected)
         }.apply { layoutParams = ctrlParams(); textSize = 12f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
 
