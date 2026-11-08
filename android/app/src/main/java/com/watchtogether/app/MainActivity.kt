@@ -127,6 +127,7 @@ class MainActivity : Activity() {
     private fun triggerHapticFeedback(isStrong: Boolean = false) {
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                @Suppress("DEPRECATION")
                 val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
                 val duration = if (isStrong) 50L else 20L
                 vibrator?.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
@@ -1003,9 +1004,17 @@ class MainActivity : Activity() {
             controlsGroup.animate().alpha(1f).setDuration(180).withStartAction {
                 controlsGroup.visibility = View.VISIBLE
             }.start()
+            if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
+                sessionHeader.animate().alpha(1f).setDuration(180).withStartAction {
+                    sessionHeader.visibility = View.VISIBLE
+                }.start()
+            }
         } else {
             controlsGroup.animate().alpha(0f).setDuration(240).withEndAction {
                 controlsGroup.visibility = View.GONE
+            }.start()
+            sessionHeader.animate().alpha(0f).setDuration(240).withEndAction {
+                sessionHeader.visibility = View.GONE
             }.start()
         }
     }
@@ -1040,6 +1049,9 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         checkClipboardInvite()
+        if (playerManager.player != null && video.player == null) {
+            video.player = playerManager.player
+        }
     }
 
     private fun selectTab(isHost: Boolean) {
@@ -1302,8 +1314,20 @@ class MainActivity : Activity() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         chatController.onConfigurationChanged(newConfig)
+        if (relayClient.connected) {
+            val isLandscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+            val density = resources.displayMetrics.density
+            if (isLandscape) {
+                mainLayout.setPadding(0, 0, 0, 0)
+                sessionHeader.visibility = View.GONE
+            } else {
+                mainLayout.setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+                sessionHeader.visibility = if (controlsVisible) View.VISIBLE else View.GONE
+            }
+        }
     }
 
+    @Deprecated("Deprecated in Java")
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (chatController.onBackPressed()) return
@@ -1322,15 +1346,18 @@ class MainActivity : Activity() {
     }
 
     private fun enterPipMode() {
-        try {
-            val aspectRatio = Rational(16, 9)
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(aspectRatio)
-                .build()
-            enterPictureInPictureMode(params)
-        } catch (_: Exception) {
-            @Suppress("DEPRECATION")
-            enterPictureInPictureMode()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (!packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+            try {
+                val aspectRatio = Rational(16, 9)
+                val params = PictureInPictureParams.Builder()
+                    .setAspectRatio(aspectRatio)
+                    .build()
+                enterPictureInPictureMode(params)
+            } catch (_: Exception) {
+                @Suppress("DEPRECATION")
+                enterPictureInPictureMode()
+            }
         }
     }
 
@@ -1338,6 +1365,16 @@ class MainActivity : Activity() {
         super.onUserLeaveHint()
         if (relayClient.connected && playerManager.player != null) {
             enterPipMode()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N && isInPictureInPictureMode) {
+            return
+        }
+        if (relayClient.connected) {
+            playerManager.player?.playWhenReady = false
         }
     }
 
@@ -1354,8 +1391,9 @@ class MainActivity : Activity() {
             }
         } else {
             if (relayClient.connected) {
-                sessionHeader.visibility = View.VISIBLE
-                controlsGroup.visibility = View.VISIBLE
+                val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                sessionHeader.visibility = if (isLandscape) View.GONE else (if (controlsVisible) View.VISIBLE else View.GONE)
+                controlsGroup.visibility = if (controlsVisible) View.VISIBLE else View.GONE
                 if (::floatingMicBtn.isInitialized) floatingMicBtn.visibility = View.VISIBLE
                 if (::chatController.isInitialized) chatController.floatingChatBtn.visibility = View.VISIBLE
             }

@@ -108,7 +108,7 @@ class LobbyManager(
         val name = getUserName()
         if (name.isEmpty()) return
         val uid = getUserId()
-        val lobbyBase = getEndpoint()
+        val lobbyBase = try { getEndpoint() } catch (_: Exception) { "https://watchtogether-relay.onrender.com" }
         val url = lobbyBase.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/lobby/ws"
         val req = Request.Builder().url(url).build()
 
@@ -240,6 +240,7 @@ class LobbyManager(
         if (isDestroyed) return
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                @Suppress("DEPRECATION")
                 (activity.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(
                     android.os.VibrationEffect.createWaveform(longArrayOf(0, 150, 100, 150), -1)
                 )

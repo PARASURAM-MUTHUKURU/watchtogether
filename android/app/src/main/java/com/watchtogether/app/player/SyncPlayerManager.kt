@@ -196,6 +196,11 @@ class SyncPlayerManager(
             .setLoadControl(loadControl)
             .build()
         p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+        val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
+            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+            .build()
+        p.setAudioAttributes(audioAttributes, true)
         player = p
         videoView.player = p
 

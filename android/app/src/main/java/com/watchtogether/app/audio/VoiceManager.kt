@@ -70,6 +70,7 @@ class VoiceManager(
     private var originalAudioMode = AudioManager.MODE_NORMAL
     private var isCommModeActive = false
 
+    @Suppress("DEPRECATION")
     private fun enableCommunicationMode() {
         try {
             if (!isCommModeActive) {
@@ -81,6 +82,7 @@ class VoiceManager(
         } catch (_: Exception) {}
     }
 
+    @Suppress("DEPRECATION")
     private fun disableCommunicationMode() {
         try {
             if (isCommModeActive && !isLiveStreaming && liveAudioTrack == null) {
@@ -200,6 +202,7 @@ class VoiceManager(
                         isTrackingSwipeUp = false
                         try {
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                @Suppress("DEPRECATION")
                                 (activity.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(
                                     android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE)
                                 )
@@ -244,6 +247,7 @@ class VoiceManager(
             isVoiceLocked = true
             try {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    @Suppress("DEPRECATION")
                     (activity.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(
                         android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE)
                     )
