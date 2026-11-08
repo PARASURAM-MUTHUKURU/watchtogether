@@ -54,6 +54,16 @@ class RelayClient(
     private var isDestroyed = false
     private var generation = 0
 
+    private val recentChatIds = java.util.Collections.synchronizedSet(
+        java.util.Collections.newSetFromMap(
+            object : java.util.LinkedHashMap<String, Boolean>(32, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+                    return size > 64
+                }
+            }
+        )
+    )
+
     private val reconnectTask = Runnable {
         if (!isDestroyed && token.isNotEmpty() && !connected) {
             connect(isReconnect = true)
@@ -178,8 +188,9 @@ class RelayClient(
                                 val textMsg = data.optString("text")
                                 val sender = data.optString("sender")
                                 val senderName = data.optString("name", if (sender == "host") "Host" else "Friend")
+                                val msgId = data.optString("id").ifEmpty { "${sender}_${textMsg.hashCode()}" }
                                 val isSelf = (host && sender == "host") || (!host && sender == "guest")
-                                if (!isSelf) {
+                                if (!isSelf && recentChatIds.add(msgId)) {
                                     listener.onChat(senderName, textMsg, false)
                                 }
                             }
@@ -193,8 +204,9 @@ class RelayClient(
                                         val textMsg = payload.optString("text")
                                         val senderName = payload.optString("name", "Friend")
                                         val sender = data.optString("sender")
+                                        val msgId = payload.optString("id").ifEmpty { "${sender}_${textMsg.hashCode()}" }
                                         val isSelf = (host && sender == "host") || (!host && sender == "guest")
-                                        if (!isSelf) {
+                                        if (!isSelf && recentChatIds.add(msgId)) {
                                             listener.onChat(senderName, textMsg, false)
                                         }
                                     } catch (_: Exception) {}
@@ -282,13 +294,30 @@ class RelayClient(
     }
 
     fun sendChat(text: String, name: String) {
-        val json = JSONObject().put("text", text).put("name", name)
-        val b64 = android.util.Base64.encodeToString(json.toString().toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-        val voiceCarrier = JSONObject()
-            .put("type", "voice")
-            .put("audio", "CHAT:$b64")
-            .put("speaking", false)
-        send(voiceCarrier)
+        val msgId = java.util.UUID.randomUUID().toString()
+        recentChatIds.add(msgId)
+
+        // 1. Send native clean JSON chat
+        val chatObj = JSONObject()
+            .put("type", "chat")
+            .put("id", msgId)
+            .put("text", text)
+            .put("name", name)
+        send(chatObj)
+
+        // 2. Also send voice carrier fallback for legacy server compatibility
+        try {
+            val carrierPayload = JSONObject()
+                .put("id", msgId)
+                .put("text", text)
+                .put("name", name)
+            val b64 = android.util.Base64.encodeToString(carrierPayload.toString().toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+            val voiceCarrier = JSONObject()
+                .put("type", "voice")
+                .put("audio", "CHAT:$b64")
+                .put("speaking", false)
+            send(voiceCarrier)
+        } catch (_: Exception) {}
     }
 
     fun sendBinary(bytes: ByteString): Boolean {

@@ -728,6 +728,9 @@ class MainActivity : Activity() {
             activity = this,
             onGetUserName = { lobbyManager.getUserName().ifEmpty { if (relayClient.host) "Host" else "Friend" } },
             onSendMessage = { text ->
+                if (!relayClient.connected) {
+                    note("💬 Message added (offline mode · connect to a room to send to friends)")
+                }
                 val myName = lobbyManager.getUserName().ifEmpty { if (relayClient.host) "Host" else "Friend" }
                 relayClient.sendChat(text, myName)
             }
@@ -1301,9 +1304,9 @@ class MainActivity : Activity() {
         chatController.onConfigurationChanged(newConfig)
     }
 
+    @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (chatController.onBackPressed()) return
-        @Suppress("DEPRECATION")
         super.onBackPressed()
     }
 

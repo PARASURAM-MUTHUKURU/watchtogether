@@ -130,6 +130,8 @@ class ChatController(
             background = UIUtils.roundedBackground(density, Color.parseColor("#F50F172A"), 16f, Color.parseColor("#334155"), 1)
             elevation = 30f
             visibility = View.GONE
+            isClickable = true
+            isFocusable = true
             setPadding((12 * density).toInt(), (10 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
             layoutParams = FrameLayout.LayoutParams(
                 if (isLandscape) (340 * density).toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
@@ -140,6 +142,29 @@ class ChatController(
                 marginStart = (6 * density).toInt()
                 marginEnd = (6 * density).toInt()
                 topMargin = if (isLandscape) (6 * density).toInt() else 0
+            }
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            chatSheet.setOnApplyWindowInsetsListener { view, insets ->
+                val imeHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
+                val lp = view.layoutParams as? FrameLayout.LayoutParams
+                if (lp != null) {
+                    lp.bottomMargin = (6 * density).toInt() + imeHeight
+                    view.layoutParams = lp
+                }
+                insets
+            }
+        } else {
+            chatSheet.setOnApplyWindowInsetsListener { view, insets ->
+                @Suppress("DEPRECATION")
+                val bottom = insets.systemWindowInsetBottom
+                val lp = view.layoutParams as? FrameLayout.LayoutParams
+                if (lp != null) {
+                    lp.bottomMargin = (6 * density).toInt() + bottom
+                    view.layoutParams = lp
+                }
+                insets
             }
         }
 
@@ -244,11 +269,19 @@ class ChatController(
             background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f, Color.parseColor("#334155"), 1)
             setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            maxLines = 3
-            imeOptions = EditorInfo.IME_ACTION_SEND
+            isSingleLine = true
+            maxLines = 1
+            imeOptions = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_ENTER_ACTION
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_SEND) {
+            setOnEditorActionListener { _, actionId, event ->
+                val isEnter = event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN
+                if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE || isEnter) {
+                    sendCurrentChatMessage()
+                    true
+                } else false
+            }
+            setOnKeyListener { _, keyCode, event ->
+                if (keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN) {
                     sendCurrentChatMessage()
                     true
                 } else false
@@ -261,11 +294,18 @@ class ChatController(
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             background = UIUtils.roundedBackground(density, Color.parseColor("#2563EB"), 10f)
-            setPadding((14 * density).toInt(), (8 * density).toInt(), (14 * density).toInt(), (8 * density).toInt())
+            setPadding((16 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = (6 * density).toInt()
             }
-            setOnClickListener { sendCurrentChatMessage() }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                it.animate().scaleX(1.15f).scaleY(1.15f).setDuration(80).withEndAction {
+                    it.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
+                }.start()
+                sendCurrentChatMessage()
+            }
         }
         chatInputRow.addView(chatInput)
         chatInputRow.addView(chatSendBtn)
