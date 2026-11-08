@@ -215,9 +215,13 @@ class RelayClient(
                                 }
                             }
                             "voice_chunk" -> {
-                                val audio = data.optString("audio")
-                                val isSpeaking = data.optBoolean("speaking", false)
-                                listener.onVoiceChunk(audio, isSpeaking)
+                                val sender = data.optString("sender")
+                                val isSelf = (host && sender == "host") || (!host && sender == "guest")
+                                if (!isSelf) {
+                                    val audio = data.optString("audio")
+                                    val isSpeaking = data.optBoolean("speaking", false)
+                                    listener.onVoiceChunk(audio, isSpeaking)
+                                }
                             }
                             "error" -> listener.onError(data.optString("message"))
                         }

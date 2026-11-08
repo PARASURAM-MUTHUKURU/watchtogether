@@ -66,10 +66,36 @@ class VoiceManager(
     private var liveAudioEnhancer: LoudnessEnhancer? = null
     private var isDestroyed = false
 
+    private val audioManager = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var originalAudioMode = AudioManager.MODE_NORMAL
+    private var isCommModeActive = false
+
+    private fun enableCommunicationMode() {
+        try {
+            if (!isCommModeActive) {
+                originalAudioMode = audioManager.mode
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                audioManager.isSpeakerphoneOn = true
+                isCommModeActive = true
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun disableCommunicationMode() {
+        try {
+            if (isCommModeActive && !isLiveStreaming && liveAudioTrack == null) {
+                audioManager.mode = originalAudioMode
+                audioManager.isSpeakerphoneOn = false
+                isCommModeActive = false
+            }
+        } catch (_: Exception) {}
+    }
+
     private val incomingSilenceRunnable = Runnable {
         if (!isDestroyed) {
             onSetPlayerVolume(1.0f)
             onHideHudDelayed()
+            disableCommunicationMode()
         }
     }
 
@@ -246,6 +272,7 @@ class VoiceManager(
         }
         if (isLiveStreaming) return
         isLiveStreaming = true
+        enableCommunicationMode()
 
         liveRecordThread = Thread({
             try {
@@ -313,7 +340,8 @@ class VoiceManager(
                     }
                     val rms = kotlin.math.sqrt(sum / readShorts)
                     val now = System.currentTimeMillis()
-                    val isSpeech = !isVoiceLocked || (rms >= 260.0)
+                    val speechThreshold = if (isVoiceLocked) 280.0 else 180.0
+                    val isSpeech = rms >= speechThreshold
 
                     if (isSpeech) {
                         lastSpeechTime = now
@@ -391,6 +419,7 @@ class VoiceManager(
         acousticEchoCanceler = null
         noiseSuppressor = null
         liveRecordThread = null
+        disableCommunicationMode()
         ui.post {
             onSetPlayerVolume(1.0f)
             onHideHudDelayed()
@@ -404,18 +433,19 @@ class VoiceManager(
     private fun getOrCreateLiveAudioTrack(): AudioTrack {
         var track = liveAudioTrack
         if (track == null || track.state != AudioTrack.STATE_INITIALIZED) {
+            enableCommunicationMode()
             val sampleRate = 16000
             val minBufSize = AudioTrack.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             )
-            val bufferSize = maxOf(minBufSize * 2, 6400)
+            val bufferSize = maxOf(minBufSize * 2, 12800)
             track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .build()
                 )
                 .setAudioFormat(
@@ -428,13 +458,6 @@ class VoiceManager(
                 .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
-            try {
-                liveAudioEnhancer?.release()
-                liveAudioEnhancer = LoudnessEnhancer(track.audioSessionId).apply {
-                    setTargetGain(1400)
-                    enabled = true
-                }
-            } catch (_: Exception) {}
             track.play()
             liveAudioTrack = track
         }
@@ -456,23 +479,27 @@ class VoiceManager(
                 }
             } catch (_: Exception) {}
             liveAudioTrack = null
+            disableCommunicationMode()
         }
     }
 
     fun handleIncomingVoiceChunk(base64: String, isSpeaking: Boolean) {
         if (isDestroyed) return
         if (isSpeaking && base64.isNotEmpty()) {
+            enableCommunicationMode()
             audioWorker.execute {
                 try {
                     val pcmBytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
-                    audioJitterBuffer.write(pcmBytes, 0, pcmBytes.size)
-                    val track = getOrCreateLiveAudioTrack()
-                    while (audioJitterBuffer.availableRead() > 0) {
-                        val readBytes = audioJitterBuffer.read(audioPlaybackTempBuf, 0, audioPlaybackTempBuf.size)
-                        if (readBytes > 0) {
-                            track.write(audioPlaybackTempBuf, 0, readBytes)
-                        } else {
-                            break
+                    if (pcmBytes.isNotEmpty()) {
+                        audioJitterBuffer.write(pcmBytes, 0, pcmBytes.size)
+                        val track = getOrCreateLiveAudioTrack()
+                        val available = audioJitterBuffer.availableRead()
+                        if (available > 0) {
+                            val temp = ByteArray(available)
+                            val n = audioJitterBuffer.read(temp, 0, available)
+                            if (n > 0) {
+                                track.write(temp, 0, n)
+                            }
                         }
                     }
                 } catch (_: Exception) {}
@@ -493,6 +520,7 @@ class VoiceManager(
                 ui.removeCallbacks(incomingSilenceRunnable)
                 onSetPlayerVolume(1.0f)
                 onHideHudDelayed()
+                disableCommunicationMode()
             }
         }
     }
@@ -517,20 +545,12 @@ class VoiceManager(
                             setAudioAttributes(
                                 AudioAttributes.Builder()
                                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                                     .build()
                             )
                             prepare()
-                            val enhancer = try {
-                                LoudnessEnhancer(audioSessionId).apply {
-                                    setTargetGain(1000)
-                                    enabled = true
-                                }
-                            } catch (_: Exception) { null }
-
                             setVolume(1.0f, 1.0f)
                             setOnCompletionListener {
-                                try { enhancer?.release() } catch (_: Exception) {}
                                 it.release()
                                 if (activeVoicePlayer === it) activeVoicePlayer = null
                                 file.delete()
@@ -538,7 +558,6 @@ class VoiceManager(
                                 onHideHudDelayed()
                             }
                             setOnErrorListener { it, _, _ ->
-                                try { enhancer?.release() } catch (_: Exception) {}
                                 it.release()
                                 if (activeVoicePlayer === it) activeVoicePlayer = null
                                 file.delete()
@@ -609,6 +628,7 @@ class VoiceManager(
         try { activeVoicePlayer?.release() } catch (_: Exception) {}
         activeVoicePlayer = null
         onSetPlayerVolume(1.0f)
+        disableCommunicationMode()
     }
 
     fun destroy() {
