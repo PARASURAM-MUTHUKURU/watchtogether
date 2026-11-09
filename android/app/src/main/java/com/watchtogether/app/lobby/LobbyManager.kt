@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Vibrator
 import android.view.Gravity
+import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -78,11 +79,11 @@ class LobbyManager(
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#64748B"))
             setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#0F172A"), 8f, Color.parseColor("#334155"), 1)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#121A2A"), 12f, Color.parseColor("#38BDF8"), 1)
         }
         val container = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((20 * density).toInt(), (10 * density).toInt(), (20 * density).toInt(), (10 * density).toInt())
+            setPadding((20 * density).toInt(), (12 * density).toInt(), (20 * density).toInt(), (12 * density).toInt())
             addView(input)
         }
 
@@ -210,29 +211,65 @@ class LobbyManager(
         for (friend in onlineFriends) {
             val fName = friend.optString("name", "Friend")
             val fUid = friend.optString("id")
-            val friendChip = TextView(activity).apply {
-                text = "🟢 $fName  ➔ Invite"
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                background = UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f)
-                setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+
+            val itemCard = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = UIUtils.roundedBackground(density, Color.parseColor("#121A2A"), 14f, Color.parseColor("#26354D"), 1)
+                setPadding((8 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = (8 * density).toInt()
-                }
-                setOnClickListener {
-                    val (code, invite) = getRoomDetails()
-                    if (isRoomActive() && code.isNotEmpty() && invite.isNotEmpty()) {
-                        sendPeerInvite(fUid, fName)
-                        text = "⏳ Invited $fName…"
-                        background = UIUtils.roundedBackground(density, Color.parseColor("#D97706"), 14f)
-                    } else {
-                        onNote("Tap 'Process & Create Room' to launch movie, then invite $fName!")
-                        showFriendsInviteDialog()
-                    }
+                    marginEnd = (10 * density).toInt()
                 }
             }
-            onlineFriendsContainer.addView(friendChip)
+            val avatar = UIUtils.avatarBadge(activity, density, fName, 28)
+            val nameCol = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding((8 * density).toInt(), 0, (10 * density).toInt(), 0)
+            }
+            val nameText = TextView(activity).apply {
+                text = fName
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            val statusRow = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val greenDot = View(activity).apply {
+                background = UIUtils.roundedBackground(density, Color.parseColor("#10B981"), 3f)
+                layoutParams = LinearLayout.LayoutParams((5 * density).toInt(), (5 * density).toInt()).apply {
+                    marginEnd = (4 * density).toInt()
+                }
+            }
+            val statusText = TextView(activity).apply {
+                text = "Online"
+                setTextColor(Color.parseColor("#34D399"))
+                textSize = 10f
+            }
+            statusRow.addView(greenDot)
+            statusRow.addView(statusText)
+            nameCol.addView(nameText)
+            nameCol.addView(statusRow)
+
+            val inviteBtn = UIUtils.styledButton(activity, density, "🍿 Invite", Color.parseColor("#059669")) {
+                val (code, invite) = getRoomDetails()
+                if (isRoomActive() && code.isNotEmpty() && invite.isNotEmpty()) {
+                    sendPeerInvite(fUid, fName)
+                    onNote("📨 Sent invite to $fName!")
+                } else {
+                    onNote("Tap 'Process & Create Room' to launch movie, then invite $fName!")
+                    showFriendsInviteDialog()
+                }
+            }.apply {
+                textSize = 11f
+                setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+            }
+
+            itemCard.addView(avatar)
+            itemCard.addView(nameCol)
+            itemCard.addView(inviteBtn)
+            onlineFriendsContainer.addView(itemCard)
         }
     }
 
@@ -290,13 +327,19 @@ class LobbyManager(
                 val row = LinearLayout(activity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, (6 * density).toInt(), 0, (6 * density).toInt())
+                    background = UIUtils.roundedBackground(density, Color.parseColor("#121A2A"), 12f, Color.parseColor("#26354D"), 1)
+                    setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = (8 * density).toInt()
+                    }
                 }
+                val avatar = UIUtils.avatarBadge(activity, density, fName, 28)
                 val friendLabel = TextView(activity).apply {
-                    text = "🟢 $fName (Online)"
-                    textSize = 14f
+                    text = fName
+                    textSize = 13f
                     typeface = Typeface.DEFAULT_BOLD
                     setTextColor(Color.WHITE)
+                    setPadding((10 * density).toInt(), 0, 0, 0)
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }
                 val inviteBtn = UIUtils.styledButton(activity, density, "🍿 Invite", Color.parseColor("#059669")) {
@@ -311,6 +354,7 @@ class LobbyManager(
                     textSize = 11f
                     setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
                 }
+                row.addView(avatar)
                 row.addView(friendLabel)
                 row.addView(inviteBtn)
                 container.addView(row)

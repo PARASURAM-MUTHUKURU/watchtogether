@@ -64,6 +64,8 @@ class RelayClient(
         )
     )
 
+    private val pendingChatQueue = java.util.concurrent.ConcurrentLinkedQueue<JSONObject>()
+
     private val reconnectTask = Runnable {
         if (!isDestroyed && token.isNotEmpty() && !connected) {
             connect(isReconnect = true)
@@ -171,6 +173,7 @@ class RelayClient(
                         connected = true
                         connecting = false
                         listener.onConnected()
+                        flushPendingChat(webSocket)
                     }
                 }
             }
@@ -189,8 +192,10 @@ class RelayClient(
                                 val sender = data.optString("sender")
                                 val senderName = data.optString("name", if (sender == "host") "Host" else "Friend")
                                 val msgId = data.optString("id").ifEmpty { "${sender}_${textMsg.hashCode()}" }
+                                val contentKey = "${sender}_${textMsg.hashCode()}"
                                 val isSelf = (host && sender == "host") || (!host && sender == "guest")
                                 if (!isSelf && recentChatIds.add(msgId)) {
+                                    recentChatIds.add(contentKey)
                                     listener.onChat(senderName, textMsg, false)
                                 }
                             }
@@ -205,8 +210,9 @@ class RelayClient(
                                         val senderName = payload.optString("name", "Friend")
                                         val sender = data.optString("sender")
                                         val msgId = payload.optString("id").ifEmpty { "${sender}_${textMsg.hashCode()}" }
+                                        val contentKey = "${sender}_${textMsg.hashCode()}"
                                         val isSelf = (host && sender == "host") || (!host && sender == "guest")
-                                        if (!isSelf && recentChatIds.add(msgId)) {
+                                        if (!isSelf && recentChatIds.add(msgId) && recentChatIds.add(contentKey)) {
                                             listener.onChat(senderName, textMsg, false)
                                         }
                                     } catch (_: Exception) {}
@@ -298,30 +304,49 @@ class RelayClient(
     }
 
     fun sendChat(text: String, name: String) {
+        val safeText = text.trim()
+        if (safeText.isEmpty()) return
+        val trimmedText = if (safeText.length > 500) safeText.substring(0, 500) else safeText
+        val safeName = name.trim().take(40).ifEmpty { if (host) "Host" else "Friend" }
         val msgId = java.util.UUID.randomUUID().toString()
         recentChatIds.add(msgId)
+        val contentKey = "${if (host) "host" else "guest"}_${trimmedText.hashCode()}"
+        recentChatIds.add(contentKey)
 
-        // 1. Send native clean JSON chat
-        val chatObj = JSONObject()
-            .put("type", "chat")
+        // Carrier payload: 100% compatible with deployed Render server and local server
+        val carrierPayload = JSONObject()
             .put("id", msgId)
-            .put("text", text)
-            .put("name", name)
-        send(chatObj)
+            .put("text", trimmedText)
+            .put("name", safeName)
+        val b64 = android.util.Base64.encodeToString(
+            carrierPayload.toString().toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP
+        )
+        val voiceCarrier = JSONObject()
+            .put("type", "voice")
+            .put("audio", "CHAT:$b64")
+            .put("speaking", false)
 
-        // 2. Also send voice carrier fallback for legacy server compatibility
-        try {
-            val carrierPayload = JSONObject()
-                .put("id", msgId)
-                .put("text", text)
-                .put("name", name)
-            val b64 = android.util.Base64.encodeToString(carrierPayload.toString().toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-            val voiceCarrier = JSONObject()
-                .put("type", "voice")
-                .put("audio", "CHAT:$b64")
-                .put("speaking", false)
-            send(voiceCarrier)
-        } catch (_: Exception) {}
+        val ws = socket
+        if (connected && ws != null) {
+            val sent = ws.send(voiceCarrier.toString())
+            if (!sent) {
+                pendingChatQueue.add(voiceCarrier)
+                listener.onNote("💬 Message queued · will deliver when connection stabilizes")
+            }
+        } else {
+            pendingChatQueue.add(voiceCarrier)
+            listener.onNote("💬 Message queued (offline) · will deliver once reconnected")
+        }
+    }
+
+    fun flushPendingChat(ws: WebSocket? = socket) {
+        val target = ws ?: socket ?: return
+        if (!connected) return
+        while (pendingChatQueue.isNotEmpty()) {
+            val msg = pendingChatQueue.poll() ?: break
+            target.send(msg.toString())
+        }
     }
 
     fun sendBinary(bytes: ByteString): Boolean {
@@ -329,6 +354,7 @@ class RelayClient(
     }
 
     fun leave() {
+        pendingChatQueue.clear()
         val roomToRevoke = code
         val tokenToRevoke = token
         val wasHost = host

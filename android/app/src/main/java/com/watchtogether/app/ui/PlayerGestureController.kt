@@ -192,8 +192,9 @@ class PlayerGestureController(
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#CC1E293B"), 18f, Color.parseColor("#3B82F6"), 1)
-            setPadding((14 * density).toInt(), (8 * density).toInt(), (14 * density).toInt(), (8 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#E60D1322"), 22f, Color.parseColor("#38BDF8"), 1)
+            setPadding((18 * density).toInt(), (10 * density).toInt(), (18 * density).toInt(), (10 * density).toInt())
+            elevation = 20f
             visibility = View.GONE
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_VERTICAL or Gravity.START
@@ -206,8 +207,9 @@ class PlayerGestureController(
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#CC1E293B"), 18f, Color.parseColor("#3B82F6"), 1)
-            setPadding((14 * density).toInt(), (8 * density).toInt(), (14 * density).toInt(), (8 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#E60D1322"), 22f, Color.parseColor("#38BDF8"), 1)
+            setPadding((18 * density).toInt(), (10 * density).toInt(), (18 * density).toInt(), (10 * density).toInt())
+            elevation = 20f
             visibility = View.GONE
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_VERTICAL or Gravity.END
@@ -234,10 +236,11 @@ class PlayerGestureController(
         hudText = TextView(activity).apply {
             text = "HUD"
             setTextColor(Color.WHITE)
-            textSize = 12f
+            textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            background = UIUtils.roundedBackground(density, Color.parseColor("#E60F172A"), 14f, Color.parseColor("#334155"), 1)
-            setPadding((14 * density).toInt(), (6 * density).toInt(), (14 * density).toInt(), (6 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#F20D1322"), 16f, Color.parseColor("#38BDF8"), 1)
+            setPadding((16 * density).toInt(), (7 * density).toInt(), (16 * density).toInt(), (7 * density).toInt())
+            elevation = 20f
         }
         hudContainer.addView(hudText)
         return hudContainer

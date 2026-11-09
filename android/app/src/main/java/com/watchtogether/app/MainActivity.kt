@@ -113,7 +113,7 @@ class MainActivity : Activity() {
 
     private val tick = object : Runnable {
         override fun run() {
-            if (relayClient.host && relayClient.connected) {
+            if (relayClient.host && relayClient.connected && !playerManager.isUserSeeking) {
                 playerManager.player?.let {
                     relayClient.send(JSONObject().put("type", "tick").put("position", it.currentPosition))
                 }
@@ -138,14 +138,16 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.statusBarColor = Color.parseColor("#07090E")
+        window.navigationBarColor = Color.parseColor("#07090E")
         val density = resources.displayMetrics.density
 
         movieChannel = MovieStreamChannel(this)
 
         mainLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0B0F19"))
-            setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (12 * density).toInt())
+            setBackgroundColor(Color.parseColor("#07090E"))
+            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (12 * density).toInt())
             fitsSystemWindows = true
         }
 
@@ -178,11 +180,12 @@ class MainActivity : Activity() {
     private fun buildHeaderUI(density: Float) {
         sessionHeader = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f)
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#E60D1322"), 16f, Color.parseColor("#26354D"), 1)
+            elevation = 14f
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = (4 * density).toInt()
+                bottomMargin = (6 * density).toInt()
             }
         }
         val topBtnRow = LinearLayout(this).apply {
@@ -197,22 +200,35 @@ class MainActivity : Activity() {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             typeface = Typeface.DEFAULT_BOLD
-            background = UIUtils.roundedBackground(density, Color.parseColor("#334155"), 6f)
-            setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
+            contentDescription = "Room code, tap to copy invite link"
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 8f, Color.parseColor("#38BDF8"), 1))
+            minHeight = (40 * density).toInt()
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = (4 * density).toInt()
+                marginEnd = (6 * density).toInt()
+            }
+            setOnClickListener {
+                if (relayClient.invite.isNotEmpty()) {
+                    val fullInvite = "${relayClient.base}|${relayClient.invite}"
+                    val clipboard = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
+                    clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("WatchTogether Invite", fullInvite))
+                    triggerHapticFeedback(false)
+                    note("📋 Room invite copied to clipboard!")
+                }
             }
         }
         friendsHeaderBtn = UIUtils.styledButton(this, density, "👥 Friends", Color.parseColor("#059669")) {
             lobbyManager.showFriendsInviteDialog()
         }.apply {
             textSize = 11f
-            setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
+            contentDescription = "View online friends and invites"
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginEnd = (4 * density).toInt()
             }
         }
-        val shareHeaderBtn = UIUtils.styledButton(this, density, "📤 Invite", Color.parseColor("#6366F1")) {
+        val shareHeaderBtn = UIUtils.styledButton(this, density, "📤 Invite", Color.parseColor("#4F46E5")) {
             if (relayClient.invite.isNotEmpty()) {
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "${relayClient.base}|${relayClient.invite}")
@@ -220,23 +236,26 @@ class MainActivity : Activity() {
             }
         }.apply {
             textSize = 11f
-            setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
+            contentDescription = "Share invite link"
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginEnd = (4 * density).toInt()
             }
         }
-        val pipBtn = UIUtils.styledButton(this, density, "⤢ PiP", Color.parseColor("#334155")) {
+        val pipBtn = UIUtils.styledButton(this, density, "⤢ PiP", Color.parseColor("#1E293B")) {
             enterPipMode()
         }.apply {
             textSize = 11f
-            setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
+            contentDescription = "Enter Picture in Picture mode"
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginEnd = (4 * density).toInt()
             }
         }
         val leaveBtn = UIUtils.styledButton(this, density, "✕ Leave", Color.parseColor("#DC2626")) { leave() }.apply {
             textSize = 11f
-            setPadding((8 * density).toInt(), (5 * density).toInt(), (8 * density).toInt(), (5 * density).toInt())
+            contentDescription = "Leave watch party room"
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
         topBtnRow.addView(roomCodeBadge)
@@ -254,7 +273,7 @@ class MainActivity : Activity() {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = (4 * density).toInt()
+                topMargin = (5 * density).toInt()
             }
         }
         sessionHeader.addView(sessionStatus)
@@ -273,41 +292,63 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(-1, -2)
         }
+        val brandBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        }
+        val brandTitleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val logoBadge = TextView(this).apply {
+            text = "🍿"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            background = UIUtils.gradientBackground(density, Color.parseColor("#4F46E5"), Color.parseColor("#7C3AED"), 10f)
+            setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply {
+                marginEnd = (8 * density).toInt()
+            }
+        }
         val titleText = TextView(this).apply {
             text = "WatchTogether"
-            textSize = 24f
+            textSize = 22f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        brandTitleRow.addView(logoBadge)
+        brandTitleRow.addView(titleText)
+        brandBox.addView(brandTitleRow)
+
+        val subtitleText = TextView(this).apply {
+            text = "Realtime Co-Watching · Voice Chat · 0 MB Local Sync"
+            textSize = 11f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setPadding(0, (3 * density).toInt(), 0, 0)
+        }
+        brandBox.addView(subtitleText)
+        titleRow.addView(brandBox)
+
         val userBadge = TextView(this).apply {
             val name = getSharedPreferences("watchtogether_prefs", Context.MODE_PRIVATE).getString("user_name", "") ?: ""
             text = "👤 ${if (name.isNotEmpty()) name else "Set Name"} ✏️"
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#38BDF8"))
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f, Color.parseColor("#0284C7"), 1)
-            setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#0D1322"), 14f, Color.parseColor("#38BDF8"), 1))
+            setPadding((12 * density).toInt(), (7 * density).toInt(), (12 * density).toInt(), (7 * density).toInt())
             setOnClickListener { lobbyManager.showEditNameDialog(initial = false) }
         }
-        titleRow.addView(titleText)
         titleRow.addView(userBadge)
         setupContent.addView(titleRow)
-
-        val subtitleText = TextView(this).apply {
-            text = "Pair with a friend in 3 easy steps"
-            textSize = 13f
-            setTextColor(Color.parseColor("#94A3B8"))
-        }
-        setupContent.addView(subtitleText)
 
         // Online Friends Card
         val friendsCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f, Color.parseColor("#334155"), 1)
-            setPadding((12 * density).toInt(), (10 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#0D1322"), 16f, Color.parseColor("#1E293B"), 1)
+            setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-                setMargins(0, (10 * density).toInt(), 0, 0)
+                setMargins(0, (12 * density).toInt(), 0, 0)
             }
         }
         val friendsCardTitle = TextView(this).apply {
@@ -321,7 +362,7 @@ class MainActivity : Activity() {
         val friendsScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = (6 * density).toInt()
+                topMargin = (8 * density).toInt()
             }
         }
         val onlineFriendsContainer = LinearLayout(this).apply {
@@ -335,7 +376,7 @@ class MainActivity : Activity() {
         // 2-Way Tab Switcher
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#0A0E17"), 14f, Color.parseColor("#1E293B"), 1)
             setPadding((4 * density).toInt(), (4 * density).toInt(), (4 * density).toInt(), (4 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 setMargins(0, (14 * density).toInt(), 0, (10 * density).toInt())
@@ -368,7 +409,8 @@ class MainActivity : Activity() {
         val movieHeroCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 16f, Color.parseColor("#3B82F6"), 1)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#0D1322"), 18f, Color.parseColor("#3B82F6"), 1)
+            elevation = 8f
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 setMargins(0, (4 * density).toInt(), 0, (10 * density).toInt())
             }
@@ -379,8 +421,13 @@ class MainActivity : Activity() {
         }
         val movieIconBadge = TextView(this).apply {
             text = "🎬"
-            textSize = 24f
-            setPadding(0, 0, (10 * density).toInt(), 0)
+            textSize = 28f
+            gravity = Gravity.CENTER
+            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f)
+            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply {
+                marginEnd = (12 * density).toInt()
+            }
         }
         fileLabel = TextView(this).apply {
             text = "No movie selected\nTap 'Select Video' to begin"
@@ -399,6 +446,19 @@ class MainActivity : Activity() {
         movieHeaderRow.addView(fileLabel)
         movieHeaderRow.addView(pickMovieBtn)
         movieHeroCard.addView(movieHeaderRow)
+
+        val formatChipsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, (10 * density).toInt(), 0, 0)
+        }
+        val formats = listOf("MP4", "MKV", "WEBM", "AVI")
+        for (fmt in formats) {
+            val chip = UIUtils.chipBadge(this, density, fmt, Color.parseColor("#162032"), Color.parseColor("#38BDF8")).apply {
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = (6 * density).toInt() }
+            }
+            formatChipsRow.addView(chip)
+        }
+        movieHeroCard.addView(formatChipsRow)
 
         val launchPartyBtn = UIUtils.gradientButton(
             this,
@@ -711,15 +771,18 @@ class MainActivity : Activity() {
 
         floatingMicBtn = TextView(this).apply {
             text = "🎙️"
-            textSize = 17f
+            textSize = 20f
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
-            layoutParams = FrameLayout.LayoutParams((42 * density).toInt(), (42 * density).toInt()).apply {
+            contentDescription = "Voice microphone toggle"
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#E6059669"), 26f, Color.parseColor("#34D399"), 1))
+            layoutParams = FrameLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt()).apply {
                 gravity = Gravity.BOTTOM or Gravity.END
                 bottomMargin = (72 * density).toInt()
                 marginEnd = (14 * density).toInt()
             }
-            elevation = 15f
+            minWidth = (48 * density).toInt()
+            minHeight = (48 * density).toInt()
+            elevation = 18f
             setOnClickListener { voiceManager.toggleOpenMic() }
             setOnLongClickListener { performClick(); true }
         }
@@ -747,8 +810,9 @@ class MainActivity : Activity() {
         controlsGroup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#E61E293B"), 12f)
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#E60A0E1A"), 16f, Color.parseColor("#1E293B"), 1)
+            elevation = 16f
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = (4 * density).toInt()
@@ -762,19 +826,24 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
         val emojis = listOf("😂", "❤️", "🍿", "🔥", "👏")
-        for (emoji in emojis) {
+        val emojiDescs = listOf("Laughing reaction", "Heart love reaction", "Popcorn watching reaction", "Fire excitement reaction", "Applause reaction")
+        for (i in emojis.indices) {
+            val emoji = emojis[i]
+            val desc = emojiDescs[i]
             val emojiBtn = TextView(this).apply {
                 text = emoji
-                textSize = 17f
+                textSize = 20f
                 gravity = Gravity.CENTER
-                setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
+                contentDescription = desc
+                minHeight = (48 * density).toInt()
+                setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
                     if (!reactionLimiter.tryAcquire(1.0)) return@setOnClickListener
                     triggerHapticFeedback(false)
                     emojiManager.spawn(emoji)
-                    animate().scaleX(1.3f).scaleY(1.3f).setDuration(100).withEndAction {
-                        animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                    animate().scaleX(1.4f).scaleY(1.4f).setDuration(110).withEndAction {
+                        animate().scaleX(1f).scaleY(1f).setDuration(110).start()
                     }.start()
                     relayClient.send(JSONObject().put("type", "reaction").put("emoji", emoji))
                     resetControlsTimer()
@@ -789,8 +858,11 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f)
-            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+            contentDescription = "Hold to talk, swipe up to lock mic"
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f, Color.parseColor("#10B981"), 1))
+            minHeight = (48 * density).toInt()
+            minWidth = (48 * density).toInt()
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = (4 * density).toInt()
                 marginEnd = (4 * density).toInt()
@@ -808,8 +880,11 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#334155"), 14f)
-            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+            contentDescription = "Toggle open handsfree mic"
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 14f, Color.parseColor("#334155"), 1))
+            minHeight = (48 * density).toInt()
+            minWidth = (48 * density).toInt()
+            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             setOnClickListener { voiceManager.toggleOpenMic() }
         }
@@ -821,7 +896,9 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding((4 * density).toInt(), (2 * density).toInt(), (4 * density).toInt(), (2 * density).toInt())
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (2 * density).toInt()
+            }
         }
         val timeCurrent = TextView(this).apply {
             text = "00:00"
@@ -831,9 +908,10 @@ class MainActivity : Activity() {
         }
         val seekBar = SeekBar(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = (6 * density).toInt()
-                marginEnd = (6 * density).toInt()
+                marginStart = (8 * density).toInt()
+                marginEnd = (8 * density).toInt()
             }
+            UIUtils.styleCustomSeekBar(this, density)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
                     if (fromUser) timeCurrent.text = UIUtils.formatTime(progress.toLong())
@@ -862,32 +940,54 @@ class MainActivity : Activity() {
 
         bottomControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, (2 * density).toInt(), 0, (2 * density).toInt())
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (3 * density).toInt(), 0, (3 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (2 * density).toInt()
+            }
         }
-        fun ctrlParams() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+        fun ctrlParams(weight: Float = 1f) = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight).apply {
             marginStart = (4 * density).toInt()
             marginEnd = (4 * density).toInt()
         }
-        val b30 = UIUtils.styledButton(this, density, "-30s", Color.parseColor("#334155")) {
+        val b30 = UIUtils.styledButton(this, density, "⏪ 30s", Color.parseColor("#1E293B")) {
             triggerHapticFeedback(false)
             playerManager.seekRelative(-30000L, relayClient.connected)
-        }.apply { layoutParams = ctrlParams(); textSize = 12f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
+        }.apply {
+            layoutParams = ctrlParams(1f)
+            textSize = 12f
+            contentDescription = "Rewind 30 seconds"
+            setPadding(0, (9 * density).toInt(), 0, (9 * density).toInt())
+        }
         val bPlay = UIUtils.styledButton(this, density, "▶ Play", Color.parseColor("#2563EB")) {
             val p = playerManager.player
             if (p != null) {
                 if (p.playbackState == androidx.media3.common.Player.STATE_ENDED) p.seekTo(0L)
                 playerManager.control(p.currentPosition, true, relayClient.connected)
             }
-        }.apply { layoutParams = ctrlParams(); textSize = 13f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
+        }.apply {
+            layoutParams = ctrlParams(1.3f)
+            textSize = 13f
+            contentDescription = "Play video"
+            setPadding(0, (9 * density).toInt(), 0, (9 * density).toInt())
+        }
         val bPause = UIUtils.styledButton(this, density, "⏸ Paused", Color.parseColor("#DC2626")) {
             playerManager.player?.let { playerManager.control(it.currentPosition, false, relayClient.connected) }
-        }.apply { layoutParams = ctrlParams(); textSize = 13f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
-        val bPlus30 = UIUtils.styledButton(this, density, "+30s", Color.parseColor("#334155")) {
+        }.apply {
+            layoutParams = ctrlParams(1.3f)
+            textSize = 13f
+            contentDescription = "Pause video"
+            setPadding(0, (9 * density).toInt(), 0, (9 * density).toInt())
+        }
+        val bPlus30 = UIUtils.styledButton(this, density, "30s ⏩", Color.parseColor("#1E293B")) {
             triggerHapticFeedback(false)
             playerManager.seekRelative(30000L, relayClient.connected)
-        }.apply { layoutParams = ctrlParams(); textSize = 12f; setPadding(0, (7 * density).toInt(), 0, (7 * density).toInt()) }
+        }.apply {
+            layoutParams = ctrlParams(1f)
+            textSize = 12f
+            contentDescription = "Fast forward 30 seconds"
+            setPadding(0, (9 * density).toInt(), 0, (9 * density).toInt())
+        }
 
         bottomControls.addView(b30)
         bottomControls.addView(bPlay)
@@ -1057,18 +1157,22 @@ class MainActivity : Activity() {
     private fun selectTab(isHost: Boolean) {
         val density = resources.displayMetrics.density
         if (isHost) {
-            hostTab.background = UIUtils.roundedBackground(density, Color.parseColor("#4F46E5"), 10f)
+            hostTab.background = UIUtils.withRipple(UIUtils.gradientBackground(density, Color.parseColor("#4F46E5"), Color.parseColor("#7C3AED"), 12f))
             hostTab.setTextColor(Color.WHITE)
-            joinTab.background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 10f)
+            hostTab.elevation = 4f * density
+            joinTab.background = UIUtils.roundedBackground(density, Color.TRANSPARENT, 12f)
             joinTab.setTextColor(Color.parseColor("#94A3B8"))
+            joinTab.elevation = 0f
             hostContainer.visibility = View.VISIBLE
             joinContainer.visibility = View.GONE
             note("Host mode · Step 1: Choose a movie to begin")
         } else {
-            joinTab.background = UIUtils.roundedBackground(density, Color.parseColor("#4F46E5"), 10f)
+            joinTab.background = UIUtils.withRipple(UIUtils.gradientBackground(density, Color.parseColor("#4F46E5"), Color.parseColor("#7C3AED"), 12f))
             joinTab.setTextColor(Color.WHITE)
-            hostTab.background = UIUtils.roundedBackground(density, Color.parseColor("#131B2A"), 10f)
+            joinTab.elevation = 4f * density
+            hostTab.background = UIUtils.roundedBackground(density, Color.TRANSPARENT, 12f)
             hostTab.setTextColor(Color.parseColor("#94A3B8"))
+            hostTab.elevation = 0f
             hostContainer.visibility = View.GONE
             joinContainer.visibility = View.VISIBLE
             checkClipboardInvite()

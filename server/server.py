@@ -315,6 +315,8 @@ async def socket(request):
                         raise ValueError()
                     name = str(data.get('name', 'Friend')).strip()[:40] or 'Friend'
                     msg = {'type': 'chat', 'text': text, 'sender': role, 'name': name, 'time': int(time.time()*1000)}
+                    if 'id' in data and isinstance(data['id'], str):
+                        msg['id'] = str(data['id'])[:64]
                     for peer in (room.host, room.guest):
                         if peer and not peer.closed:
                             try:

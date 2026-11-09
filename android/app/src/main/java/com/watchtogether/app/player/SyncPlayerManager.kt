@@ -73,6 +73,12 @@ class SyncPlayerManager(
     var isUserSeeking = false
     private var isDestroyed = false
 
+    // Sync & Hysteresis State: Prevents ping-pong pause/play oscillation
+    private var isInitialReadyAchieved = false
+    private val stallThresholdMs = 2800L
+    private var stallRunnable: Runnable? = null
+    private var lastBufferReportTime = 0L
+
     // DSA: Sliding Window Median Filter for network jitter absorption & stable clock drift estimation
     private val driftFilter = com.watchtogether.app.dsa.DriftJitterFilter(capacity = 7)
 
@@ -110,7 +116,8 @@ class SyncPlayerManager(
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding((22 * density).toInt(), (16 * density).toInt(), (22 * density).toInt(), (16 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#EE0F172A"), 16f, Color.parseColor("#334155"), 1)
+            background = UIUtils.roundedBackground(density, Color.parseColor("#F20D1322"), 18f, Color.parseColor("#38BDF8"), 1)
+            elevation = 24f
             visibility = View.GONE
             isClickable = false
             isFocusable = false
@@ -119,7 +126,7 @@ class SyncPlayerManager(
             }
         }
         videoLoadingProgress = ProgressBar(context).apply {
-            indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#34D399"))
+            indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#38BDF8"))
             layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 bottomMargin = (10 * density).toInt()
@@ -153,14 +160,14 @@ class SyncPlayerManager(
         ui.post {
             if (!isDestroyed && ::bPlay.isInitialized && ::bPause.isInitialized) {
                 if (isPlaying) {
-                    bPlay.background = UIUtils.roundedBackground(density, Color.parseColor("#10B981"), 10f)
+                    bPlay.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#059669"), 12f, Color.parseColor("#10B981"), 1))
                     bPlay.text = "▶ Playing"
-                    bPause.background = UIUtils.roundedBackground(density, Color.parseColor("#334155"), 10f)
+                    bPause.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f))
                     bPause.text = "⏸ Pause"
                 } else {
-                    bPlay.background = UIUtils.roundedBackground(density, Color.parseColor("#2563EB"), 10f)
+                    bPlay.background = UIUtils.withRipple(UIUtils.gradientBackground(density, Color.parseColor("#2563EB"), Color.parseColor("#4F46E5"), 12f))
                     bPlay.text = "▶ Play"
-                    bPause.background = UIUtils.roundedBackground(density, Color.parseColor("#DC2626"), 10f)
+                    bPause.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#DC2626"), 12f, Color.parseColor("#EF4444"), 1))
                     bPause.text = "⏸ Paused"
                 }
             }
@@ -178,17 +185,30 @@ class SyncPlayerManager(
     ) {
         if (player != null) {
             val ready = player?.playbackState == Player.STATE_READY
-            onSendReady(ready, if (ready) 100 else (player?.bufferedPercentage ?: 0))
+            if (ready) isInitialReadyAchieved = true
+            lastReady = ready
+            val pct = if (ready) 100 else (player?.bufferedPercentage ?: 0)
+            lastSentBufferPct = pct
+            onSendReady(ready, pct)
             return
         }
+
+        isInitialReadyAchieved = false
+        stallRunnable?.let { ui.removeCallbacks(it) }
+        stallRunnable = null
 
         val httpFactory = OkHttpDataSource.Factory(client).setDefaultRequestProperties(mapOf("Authorization" to "Bearer $token"))
         val factory = DefaultDataSource.Factory(context, httpFactory)
         val extractorsFactory = DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
         val mediaSourceFactory = DefaultMediaSourceFactory(factory, extractorsFactory)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(2_500, 15_000, 400, 500)
-            .setBackBuffer(5_000, true)
+            .setBufferDurationsMs(
+                15_000, // minBufferMs (15s reservoir prevents cellular starvation)
+                50_000, // maxBufferMs (up to 50s continuous prefetch)
+                2_500,  // bufferForPlaybackMs (2.5s runway before initial playback)
+                3_500   // bufferForPlaybackAfterRebufferMs (3.5s cushion after any rebuffer)
+            )
+            .setBackBuffer(10_000, true)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         val p = ExoPlayer.Builder(context)
@@ -206,21 +226,18 @@ class SyncPlayerManager(
 
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                val ready = playbackState == Player.STATE_READY
-                if (ready != lastReady) {
-                    lastReady = ready
-                    val pct = if (ready) 100 else p.bufferedPercentage
-                    lastSentBufferPct = pct
-                    onSendReady(ready, pct)
-                }
                 when (playbackState) {
-                    Player.STATE_BUFFERING -> {
-                        val pct = p.bufferedPercentage
-                        val msg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
-                        updateLoadingHud(true, msg)
-                        onNote(msg)
-                    }
                     Player.STATE_READY -> {
+                        stallRunnable?.let { ui.removeCallbacks(it) }
+                        stallRunnable = null
+
+                        isInitialReadyAchieved = true
+                        if (lastReady != true) {
+                            lastReady = true
+                            lastSentBufferPct = 100
+                            onSendReady(true, 100)
+                        }
+
                         updateLoadingHud(false)
                         if (!hasInitialSeekApplied && pendingInitialSeek > 1500L) {
                             hasInitialSeekApplied = true
@@ -235,8 +252,49 @@ class SyncPlayerManager(
                         onNote(if (isPlaying) "▶ Playing in sync" else "⏸ Paused (Both in sync)")
                         if (isPlaying) onResetControlsTimer() else onSetControlsVisible(true)
                     }
+                    Player.STATE_BUFFERING -> {
+                        val pct = p.bufferedPercentage
+                        if (!isInitialReadyAchieved) {
+                            // Initial startup: report ready=false so server waits for both peers
+                            if (lastReady != false) {
+                                lastReady = false
+                                lastSentBufferPct = pct
+                                onSendReady(false, pct)
+                            }
+                            val msg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Preparing movie…"
+                            updateLoadingHud(true, msg)
+                            onNote(msg)
+                        } else {
+                            // Runtime rebuffering: apply stall hysteresis. Do NOT immediately pause peer!
+                            // Only send ready=false if stall persists continuously for stallThresholdMs.
+                            if (stallRunnable == null) {
+                                stallRunnable = Runnable {
+                                    if (!isDestroyed && player?.playbackState == Player.STATE_BUFFERING) {
+                                        lastReady = false
+                                        val pPct = player?.bufferedPercentage ?: 0
+                                        lastSentBufferPct = pPct
+                                        onSendReady(false, pPct)
+                                        val msg = if (pPct > 0) "⏳ Buffering ($pPct%)…" else "⏳ Buffering movie…"
+                                        updateLoadingHud(true, msg)
+                                        onNote(msg)
+                                    }
+                                    stallRunnable = null
+                                }
+                                ui.postDelayed(stallRunnable!!, stallThresholdMs)
+                            }
+                            ui.postDelayed({
+                                if (!isDestroyed && player?.playbackState == Player.STATE_BUFFERING) {
+                                    val currentPct = player?.bufferedPercentage ?: 0
+                                    val msg = if (currentPct > 0) "⏳ Buffering ($currentPct%)…" else "⏳ Buffering movie…"
+                                    updateLoadingHud(true, msg)
+                                }
+                            }, 800L)
+                        }
+                    }
                     Player.STATE_ENDED -> control(p.currentPosition, false, true)
                     Player.STATE_IDLE -> {
+                        stallRunnable?.let { ui.removeCallbacks(it) }
+                        stallRunnable = null
                         updateLoadingHud(false)
                         onNote("Player idle")
                     }
@@ -246,18 +304,26 @@ class SyncPlayerManager(
             override fun onIsLoadingChanged(isLoading: Boolean) {
                 if (p.playbackState == Player.STATE_BUFFERING) {
                     val pct = p.bufferedPercentage
-                    if (pct != lastSentBufferPct) {
-                        lastSentBufferPct = pct
-                        onSendReady(false, pct)
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    // Throttle WebSocket updates: only report if in declared stall or initial load, and only on significant delta
+                    if (lastReady == false || !isInitialReadyAchieved) {
+                        if (kotlin.math.abs(pct - lastSentBufferPct) >= 15 || (now - lastBufferReportTime > 1500L && pct != lastSentBufferPct)) {
+                            lastBufferReportTime = now
+                            lastSentBufferPct = pct
+                            onSendReady(false, pct)
+                            val msg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
+                            updateLoadingHud(true, msg)
+                            onNote(msg)
+                        }
                     }
-                    val msg = if (pct > 0) "⏳ Buffering ($pct%)…" else "⏳ Buffering movie…"
-                    updateLoadingHud(true, msg)
-                    onNote(msg)
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                stallRunnable?.let { ui.removeCallbacks(it) }
+                stallRunnable = null
                 updateLoadingHud(false)
+                lastReady = false
                 onSendReady(false, 0)
                 onNote("Video error: ${error.errorCodeName}. Details: ${error.message}")
             }
@@ -357,23 +423,46 @@ class SyncPlayerManager(
         if (playing) {
             onResetControlsTimer()
             if (p.playbackState == Player.STATE_READY) {
-                if (!isLocalSeekActive) {
+                // IMPORTANT: The Host is the master timeline clock (source of truth).
+                // The Host must NEVER adjust playback speed or seek against the server's delayed echo!
+                // Only the Guest synchronizes against the Host's timeline.
+                if (!isLocalSeekActive && !isHost) {
                     val rawDrift = position - p.currentPosition
-                    val drift = if (abs(rawDrift) > 3500) {
+                    val drift = if (abs(rawDrift) > 6000) {
                         driftFilter.reset()
                         rawDrift
                     } else {
                         driftFilter.addSample(rawDrift)
                     }
                     when {
-                        abs(drift) > 3500 -> {
+                        abs(drift) > 6000 -> {
+                            // Major desync (> 6s) - jump to host position
                             p.seekTo(position)
                             p.playbackParameters = PlaybackParameters(1.0f)
                         }
-                        drift > 200 -> p.playbackParameters = PlaybackParameters(1.04f)
-                        drift < -200 -> p.playbackParameters = PlaybackParameters(0.96f)
-                        else -> p.playbackParameters = PlaybackParameters(1.0f)
+                        drift > 2500 -> {
+                            // Behind by 2.5s - 6s: catch up at 1.10x smoothly without hard seek
+                            p.playbackParameters = PlaybackParameters(1.10f)
+                        }
+                        drift < -2500 -> {
+                            // Ahead by 2.5s - 6s: slow down to 0.90x smoothly
+                            p.playbackParameters = PlaybackParameters(0.90f)
+                        }
+                        drift > 750 -> {
+                            // Behind by 750ms - 2500ms: gentle 1.04x speedup
+                            p.playbackParameters = PlaybackParameters(1.04f)
+                        }
+                        drift < -750 -> {
+                            // Ahead by 750ms - 2500ms: gentle 0.96x slowdown
+                            p.playbackParameters = PlaybackParameters(0.96f)
+                        }
+                        else -> {
+                            // In sync (within ±750ms deadband): normal 1.0x speed
+                            p.playbackParameters = PlaybackParameters(1.0f)
+                        }
                     }
+                } else if (isHost) {
+                    p.playbackParameters = PlaybackParameters(1.0f)
                 }
             } else if (!hasInitialSeekApplied) {
                 driftFilter.reset()
@@ -383,7 +472,7 @@ class SyncPlayerManager(
             onSetControlsVisible(true)
             p.playbackParameters = PlaybackParameters(1.0f)
             if (!isLocalSeekActive) {
-                if (p.playbackState == Player.STATE_READY && abs(p.currentPosition - position) > 3000) {
+                if (p.playbackState == Player.STATE_READY && abs(p.currentPosition - position) > 2500) {
                     p.seekTo(position)
                 } else if (!hasInitialSeekApplied && p.playbackState != Player.STATE_READY) {
                     pendingInitialSeek = position
@@ -439,16 +528,20 @@ class SyncPlayerManager(
     }
 
     fun release() {
+        stallRunnable?.let { ui.removeCallbacks(it) }
+        stallRunnable = null
         ui.removeCallbacks(progressUpdater)
         ui.removeCallbacks(debouncedControlRunnable)
         driftFilter.reset()
         lastLocalSeekTimestamp = 0L
         activeSeekTarget = -1L
         hasInitialSeekApplied = false
+        isInitialReadyAchieved = false
         lastSentBufferPct = -1
         lastReady = null
         latest = null
         pendingInitialSeek = 0L
+        lastBufferReportTime = 0L
         updateLoadingHud(false)
         player?.release()
         player = null

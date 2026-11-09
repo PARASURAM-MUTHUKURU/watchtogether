@@ -113,19 +113,19 @@ class VoiceManager(
             isTrackingSwipeUp = false
             if (::micBtn.isInitialized) {
                 micBtn.text = "🎙️ Talk"
-                micBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f)
+                micBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f, Color.parseColor("#10B981"), 1))
                 micBtn.scaleX = 1f
                 micBtn.scaleY = 1f
             }
             if (::openMicBtn.isInitialized) {
                 openMicBtn.text = "🔓 Open"
-                openMicBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#334155"), 14f)
+                openMicBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 14f, Color.parseColor("#334155"), 1))
                 openMicBtn.scaleX = 1f
                 openMicBtn.scaleY = 1f
             }
             if (::floatingMicBtn.isInitialized) {
                 floatingMicBtn.text = "🎙️"
-                floatingMicBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 1)
+                floatingMicBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#E60D1322"), 22f, Color.parseColor("#10B981"), 1))
                 floatingMicBtn.scaleX = 1f
                 floatingMicBtn.scaleY = 1f
             }
@@ -138,28 +138,28 @@ class VoiceManager(
             if (speaking) {
                 if (::micBtn.isInitialized) {
                     micBtn.text = "🗣️ Speaking…"
-                    micBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2)
+                    micBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2))
                 }
                 if (::openMicBtn.isInitialized) {
                     openMicBtn.text = "🗣️ Live"
-                    openMicBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2)
+                    openMicBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#059669"), 14f, Color.parseColor("#34D399"), 2))
                 }
                 if (::floatingMicBtn.isInitialized) {
                     floatingMicBtn.text = "🗣️"
-                    floatingMicBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#CC059669"), 18f, Color.parseColor("#34D399"), 2)
+                    floatingMicBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#E6059669"), 22f, Color.parseColor("#34D399"), 2))
                 }
             } else {
                 if (::micBtn.isInitialized) {
                     micBtn.text = "🟢 Open Mic"
-                    micBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2)
+                    micBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2))
                 }
                 if (::openMicBtn.isInitialized) {
                     openMicBtn.text = "🟢 Mute"
-                    openMicBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2)
+                    openMicBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#0F766E"), 14f, Color.parseColor("#14B8A6"), 2))
                 }
                 if (::floatingMicBtn.isInitialized) {
                     floatingMicBtn.text = "🟢"
-                    floatingMicBtn.background = UIUtils.roundedBackground(density, Color.parseColor("#CC0F766E"), 18f, Color.parseColor("#14B8A6"), 2)
+                    floatingMicBtn.background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#E60F766E"), 22f, Color.parseColor("#14B8A6"), 2))
                 }
             }
         }

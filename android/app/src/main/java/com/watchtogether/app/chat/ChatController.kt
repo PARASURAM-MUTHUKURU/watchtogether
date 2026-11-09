@@ -54,6 +54,7 @@ class ChatController(
         private set
     private var unreadChatCount = 0
     private var isDestroyed = false
+    private var lastSendTimestamp = 0L
 
     private val hideChatToastRunnable = Runnable {
         if (!isDestroyed && ::floatingChatToast.isInitialized) {
@@ -66,15 +67,18 @@ class ChatController(
     fun buildFloatingChatBtn(): TextView {
         floatingChatBtn = TextView(activity).apply {
             text = "💬"
-            textSize = 17f
+            textSize = 20f
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#CC1E293B"), 18f, Color.parseColor("#3B82F6"), 1)
-            layoutParams = FrameLayout.LayoutParams((42 * density).toInt(), (42 * density).toInt()).apply {
+            contentDescription = "Open room chat sheet"
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#E60D1322"), 26f, Color.parseColor("#4F46E5"), 1))
+            layoutParams = FrameLayout.LayoutParams((52 * density).toInt(), (52 * density).toInt()).apply {
                 gravity = Gravity.BOTTOM or Gravity.START
                 bottomMargin = (72 * density).toInt()
                 marginStart = (14 * density).toInt()
             }
-            elevation = 15f
+            minWidth = (48 * density).toInt()
+            minHeight = (48 * density).toInt()
+            elevation = 18f
             setOnClickListener { toggleChat() }
         }
         return floatingChatBtn
@@ -84,13 +88,13 @@ class ChatController(
         floatingChatToast = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = UIUtils.roundedBackground(density, Color.parseColor("#F00F172A"), 14f, Color.parseColor("#3B82F6"), 1)
-            setPadding((12 * density).toInt(), (7 * density).toInt(), (14 * density).toInt(), (7 * density).toInt())
-            elevation = 20f
+            background = UIUtils.roundedBackground(density, Color.parseColor("#F50D1322"), 16f, Color.parseColor("#38BDF8"), 1)
+            setPadding((14 * density).toInt(), (9 * density).toInt(), (16 * density).toInt(), (9 * density).toInt())
+            elevation = 24f
             visibility = View.GONE
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.BOTTOM or Gravity.START
-                bottomMargin = (122 * density).toInt()
+                bottomMargin = (124 * density).toInt()
                 marginStart = (14 * density).toInt()
                 marginEnd = (14 * density).toInt()
             }
@@ -113,8 +117,11 @@ class ChatController(
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E3A8A"), 8f, Color.parseColor("#3B82F6"), 1)
-            setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+            contentDescription = "Toggle room chat"
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f, Color.parseColor("#4F46E5"), 1))
+            minHeight = (48 * density).toInt()
+            minWidth = (48 * density).toInt()
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = (4 * density).toInt()
             }
@@ -127,12 +134,12 @@ class ChatController(
         val isLandscape = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         chatSheet = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            background = UIUtils.roundedBackground(density, Color.parseColor("#F50F172A"), 16f, Color.parseColor("#334155"), 1)
-            elevation = 30f
+            background = UIUtils.roundedBackground(density, Color.parseColor("#F7080C16"), 20f, Color.parseColor("#26354D"), 1)
+            elevation = 32f
             visibility = View.GONE
             isClickable = true
             isFocusable = true
-            setPadding((12 * density).toInt(), (10 * density).toInt(), (12 * density).toInt(), (10 * density).toInt())
+            setPadding((14 * density).toInt(), (10 * density).toInt(), (14 * density).toInt(), (10 * density).toInt())
             layoutParams = FrameLayout.LayoutParams(
                 if (isLandscape) (340 * density).toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
                 if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (300 * density).toInt()
@@ -145,28 +152,70 @@ class ChatController(
             }
         }
 
+        val applyInsets: (View, Int) -> Unit = { view, imeHeight ->
+            val isLandscape = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            val isInMultiWindow = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                activity.isInMultiWindowMode
+            } else false
+
+            val lp = view.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                if (isLandscape) {
+                    lp.bottomMargin = (6 * density).toInt() + imeHeight
+                    view.layoutParams = lp
+                } else {
+                    if (imeHeight > 0) {
+                        // Keyboard is OPEN:
+                        // Place sheet right above keyboard, and dynamically clamp height so it NEVER covers the movie player!
+                        val screenHeight = activity.resources.displayMetrics.heightPixels
+                        val maxAllowedHeight = screenHeight - imeHeight - (180 * density).toInt()
+                        val minHeight = if (isInMultiWindow) (110 * density).toInt() else (150 * density).toInt()
+                        val maxHeight = if (isInMultiWindow) (160 * density).toInt() else (220 * density).toInt()
+                        val clampedHeight = maxOf(minHeight, minOf(maxHeight, maxAllowedHeight))
+                        lp.height = clampedHeight
+                        lp.bottomMargin = (6 * density).toInt() + imeHeight
+                    } else {
+                        // Keyboard is CLOSED:
+                        // Standard comfortable bottom sheet (compact in split-screen)
+                        lp.height = if (isInMultiWindow) (190 * density).toInt() else (270 * density).toInt()
+                        lp.bottomMargin = (6 * density).toInt()
+                    }
+                    view.layoutParams = lp
+                }
+            }
+            if (imeHeight > 0) {
+                ui.postDelayed({
+                    if (!isDestroyed && ::chatScrollView.isInitialized) {
+                        chatScrollView.fullScroll(View.FOCUS_DOWN)
+                    }
+                }, 100)
+            }
+        }
+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             chatSheet.setOnApplyWindowInsetsListener { view, insets ->
                 val imeHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-                val lp = view.layoutParams as? FrameLayout.LayoutParams
-                if (lp != null) {
-                    lp.bottomMargin = (6 * density).toInt() + imeHeight
-                    view.layoutParams = lp
-                }
+                applyInsets(view, imeHeight)
                 insets
             }
         } else {
             chatSheet.setOnApplyWindowInsetsListener { view, insets ->
                 @Suppress("DEPRECATION")
                 val bottom = insets.systemWindowInsetBottom
-                val lp = view.layoutParams as? FrameLayout.LayoutParams
-                if (lp != null) {
-                    lp.bottomMargin = (6 * density).toInt() + bottom
-                    view.layoutParams = lp
-                }
+                applyInsets(view, bottom)
                 insets
             }
         }
+
+        // Modern Drag Handle
+        val dragHandle = View(activity).apply {
+            background = UIUtils.roundedBackground(density, Color.parseColor("#475569"), 3f)
+            layoutParams = LinearLayout.LayoutParams((38 * density).toInt(), (4 * density).toInt()).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = (8 * density).toInt()
+            }
+        }
+        chatSheet.addView(dragHandle)
 
         val chatHeader = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -186,8 +235,12 @@ class ChatController(
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding((8 * density).toInt(), (3 * density).toInt(), (8 * density).toInt(), (3 * density).toInt())
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f)
+            gravity = Gravity.CENTER
+            contentDescription = "Close chat sheet"
+            minHeight = (44 * density).toInt()
+            minWidth = (44 * density).toInt()
+            setPadding((12 * density).toInt(), (6 * density).toInt(), (12 * density).toInt(), (6 * density).toInt())
+            background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f))
             setOnClickListener { toggleChat() }
         }
         chatHeader.addView(chatTitle)
@@ -238,8 +291,8 @@ class ChatController(
                 textSize = 11f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(Color.parseColor("#E2E8F0"))
-                background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f, Color.parseColor("#334155"), 1)
-                setPadding((10 * density).toInt(), (5 * density).toInt(), (10 * density).toInt(), (5 * density).toInt())
+                background = UIUtils.withRipple(UIUtils.roundedBackground(density, Color.parseColor("#162032"), 12f, Color.parseColor("#26354D"), 1))
+                setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                     marginEnd = (6 * density).toInt()
                 }
@@ -266,22 +319,22 @@ class ChatController(
             setHintTextColor(Color.parseColor("#64748B"))
             setTextColor(Color.WHITE)
             textSize = 13f
-            background = UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 10f, Color.parseColor("#334155"), 1)
-            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
+            background = UIUtils.roundedBackground(density, Color.parseColor("#121A2A"), 14f, Color.parseColor("#26354D"), 1)
+            setPadding((14 * density).toInt(), (9 * density).toInt(), (14 * density).toInt(), (9 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            isSingleLine = true
-            maxLines = 1
-            imeOptions = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_ENTER_ACTION
+            maxLines = 3
+            filters = arrayOf(android.text.InputFilter.LengthFilter(500))
+            imeOptions = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_EXTRACT_UI
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             setOnEditorActionListener { _, actionId, event ->
-                val isEnter = event != null && event.keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN
-                if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE || isEnter) {
-                    sendCurrentChatMessage()
-                    true
-                } else false
-            }
-            setOnKeyListener { _, keyCode, event ->
-                if (keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN) {
+                val editable = chatInput.text
+                val isComposing = editable is android.text.Spannable &&
+                    android.view.inputmethod.BaseInputConnection.getComposingSpanStart(editable) >= 0
+                val isHardwareEnter = event != null &&
+                    event.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
+                    event.action == android.view.KeyEvent.ACTION_DOWN &&
+                    !event.isCanceled
+                if (!isComposing && (actionId == EditorInfo.IME_ACTION_SEND || isHardwareEnter)) {
                     sendCurrentChatMessage()
                     true
                 } else false
@@ -290,11 +343,14 @@ class ChatController(
         chatSendBtn = TextView(activity).apply {
             text = "➤"
             setTextColor(Color.WHITE)
-            textSize = 16f
+            textSize = 17f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            background = UIUtils.roundedBackground(density, Color.parseColor("#2563EB"), 10f)
-            setPadding((16 * density).toInt(), (8 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
+            contentDescription = "Send chat message"
+            background = UIUtils.withRipple(UIUtils.gradientBackground(density, Color.parseColor("#4F46E5"), Color.parseColor("#7C3AED"), 14f))
+            minHeight = (48 * density).toInt()
+            minWidth = (48 * density).toInt()
+            setPadding((16 * density).toInt(), (10 * density).toInt(), (16 * density).toInt(), (10 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = (6 * density).toInt()
             }
@@ -346,12 +402,33 @@ class ChatController(
 
     fun sendCurrentChatMessage() {
         if (isDestroyed || !::chatInput.isInitialized) return
+
+        // Commit and finalize any active IME composing text before reading
+        val editable = chatInput.text
+        if (editable is android.text.Spannable) {
+            android.view.inputmethod.BaseInputConnection.removeComposingSpans(editable)
+        }
+
         val rawText = chatInput.text?.toString()?.trim() ?: ""
         if (rawText.isEmpty()) return
-        chatInput.setText("")
+
+        // Debounce rapid double-taps within 250ms
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastSendTimestamp < 250L) return
+        lastSendTimestamp = now
+
+        val textToSend = if (rawText.length > 500) rawText.substring(0, 500) else rawText
+        chatInput.text?.clear()
+
         val myName = onGetUserName().ifEmpty { "You" }
-        handleIncomingChat(myName, rawText, isSelf = true)
-        onSendMessage(rawText)
+        handleIncomingChat(myName, textToSend, isSelf = true)
+        onSendMessage(textToSend)
+
+        chatScrollView.post {
+            if (!isDestroyed && ::chatScrollView.isInitialized) {
+                chatScrollView.fullScroll(View.FOCUS_DOWN)
+            }
+        }
     }
 
     fun handleIncomingChat(senderName: String, text: String, isSelf: Boolean) {
@@ -371,11 +448,11 @@ class ChatController(
             val bubble = LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 background = if (isSelf) {
-                    UIUtils.roundedBackground(density, Color.parseColor("#2563EB"), 12f)
+                    UIUtils.gradientBackground(density, Color.parseColor("#4F46E5"), Color.parseColor("#7C3AED"), 14f)
                 } else {
-                    UIUtils.roundedBackground(density, Color.parseColor("#1E293B"), 12f, Color.parseColor("#334155"), 1)
+                    UIUtils.roundedBackground(density, Color.parseColor("#162032"), 14f, Color.parseColor("#26354D"), 1)
                 }
-                setPadding((12 * density).toInt(), (7 * density).toInt(), (12 * density).toInt(), (7 * density).toInt())
+                setPadding((13 * density).toInt(), (8 * density).toInt(), (13 * density).toInt(), (8 * density).toInt())
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                     gravity = if (isSelf) Gravity.END else Gravity.START
                 }
@@ -443,7 +520,7 @@ class ChatController(
             val isLandscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
             chatSheet.layoutParams = FrameLayout.LayoutParams(
                 if (isLandscape) (340 * density).toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
-                if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (300 * density).toInt()
+                if (isLandscape) FrameLayout.LayoutParams.MATCH_PARENT else (270 * density).toInt()
             ).apply {
                 gravity = if (isLandscape) Gravity.END or Gravity.BOTTOM else Gravity.BOTTOM
                 bottomMargin = (6 * density).toInt()
